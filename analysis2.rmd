@@ -91,6 +91,7 @@ chris_m <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
 glimpse(chris_m)
 count(chris_m, UNIT_LBL)
 count(chris_m, MSR_AS_OF_DT)
+count(chris_m, PRCS_DT) # what is PRCS_DT??
 
 #.. is UNIT_LBL unique for each measure (we hope)? ----
 UNIT_LBL <- chris_m %>%
@@ -111,16 +112,17 @@ count(UNIT_LBL, UNIT_LBL)
 saveRDS(UNIT_LBL, here::here("data", "ignore", "UNIT_LBL.rds"))
 
 #.. look at MSR_AS_OF_DT ----
+# do as_of dates change within a measure-pps-project?
 mdates <- chris_m %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, MSR_AS_OF_DT) %>%
-  summarise(nobs=n()) %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  mutate(n_asof=n()) %>%
-  ungroup
-mdates %>% filter(n_asof > 1)
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, DSRIP_PROJ_ID, DSRIP_PROJ_TITLE, PPS_ID, PPS_NAME) %>%
+  summarise(ndates=length(unique(MSR_AS_OF_DT)))
 
+tmp <- mdates[1, ] %>% 
+  select(-ndates) %>%
+  left_join(chris_m)
+# yes, the MSR_AS_OF_DT can change within a measure, project, pps, over time -- it looks like they must
+# calculate a measure and then keep it for later dates
 
-count(chris_m, MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL)
 ```
 
 
@@ -172,38 +174,61 @@ missids <- ppsa2 %>% filter(is.na(PER_END_DT)) %>% .[["X1"]]
 ppsa %>% filter(X1 %in% missids) # yes, missing in the character data, also; I guess we have to accept it for now
 
 # quick check: is MSR_RESULT approx equal to NUM / DEN?
-tmp <- ppsm2 %>%
-  mutate(msr_calc=MSR_NUM / MSR_DEN * 100, # discovered that it must be x 100 
+ulabs <- readRDS(here::here("data", "ignore", "UNIT_LBL.rds")) # get the labels so we know how to calculate each measure
+count(ulabs, UNIT_LBL)
+measure_check <- ppsm2 %>%
+  left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
+  mutate(denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
+                         UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
+                         UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
+                         UNIT_LBL == "Percentage" ~ MSR_DEN / 100,
+                         # attend to measures for which we don't have UNIT_LBL, based on data-checking by hand
+                         MSR_RESULT_ID %in% c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES",
+                                              "LSRAPRES", "LSRDSRES", "PAINCRES") ~ MSR_DEN / 100,
+                         TRUE ~ 9e-99),
+         msr_calc=MSR_NUM / denom,
          diff=msr_calc - MSR_RESULT) %>%
   filter(diff!=0)
-quantile(tmp$diff, na.rm=TRUE)
+quantile(measure_check$diff, na.rm=TRUE) # good, they match almost perfectly
 
-# apparently some of the measures are off by a factor of 100 - which ones??
-
-chris_m <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
-glimpse(chris_m)
-count(chris_m, UNIT_LBL)
-count(chris_m, MSR_AS_OF_DT)
-
-count(chris_m, MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL)
 
 ```
 
 
-## create monthly file with statewide records as pps 99
+## create monthly file with statewide records, as pps 99
 ```{r add_statewide}
 state <- ppsm2 %>%
   group_by(MSR_RESULT_ID, PER_END_DT) %>% 
   summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
-  mutate(PPS_ID=99, PPS_NAME="Statewide", MSR_RESULT=MSR_NUM / MSR_DEN * 100e3)
+  mutate(PPS_ID=99, PPS_NAME="Statewide")
 
-# add the state total
-numdem2 <- numdem1 %>%
-  bind_rows(numdem1 %>% 
-              group_by(PER_END_DT) %>% 
-              summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
-              mutate(PPS_ID=99, PPS_NAME="Statewide", MSR_RESULT=MSR_NUM / MSR_DEN * 100e3)) %>%
-  arrange(PPS_ID, PER_END_DT)
+# add the state total and calc measures
+pct_msr <- c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES", "LSRAPRES", "LSRDSRES", "PAINCRES")
+ppsall <- bind_rows(ppsm2, state) %>%
+  left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
+  mutate(UNIT_LBL=ifelse(MSR_RESULT_ID %in% pct_msr, "Percentage", UNIT_LBL),
+         denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
+                         UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
+                         UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
+                         UNIT_LBL == "Percentage" ~ MSR_DEN / 100,
+                         TRUE ~ 9e-99),
+         msr_calc=MSR_NUM / denom,
+         MSR_RESULT=ifelse(PPS_ID==99, msr_calc, MSR_RESULT),
+         idname=paste0(str_pad(PPS_ID, 2, pad="0"), ": ", PPS_NAME) %>% str_wrap(25)) %>% # zero-pad for better sorting
+  arrange(MSR_RESULT_ID, PPS_ID, PER_END_DT)
+# tmp <- ppsall %>% filter(abs(MSR_RESULT - msr_calc) > 0.1) # good, no errors
+glimpse(ppsall)
+saveRDS(ppsall, here::here("data", "ignore", "ppsall.rds"))
+
+
+```
+
+
+# More exploration
+```{r}
+ppsall <- readRDS(here::here("data", "ignore", "ppsall.rds"))
+
+
 
 
 ```
