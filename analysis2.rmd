@@ -82,7 +82,49 @@ save(ppsm, ppsa, ppsnet, file=here::here("data", "ignore", "dsripdata.rdata"))
 ```
 
 
-# take a look at the data
+# Extract metadata from Chris's project-level data
+```{r ONETIME_metadata}
+# Chris's monthly project-level data appears to have a few variables of value:
+#  - UNIT_LBL tells us how to calculate a measure from numerator and denominator
+#  - MSR_AS_OF_DT probably tells us the vintage of the data that were used in calculating a measure
+chris_m <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
+glimpse(chris_m)
+count(chris_m, UNIT_LBL)
+count(chris_m, MSR_AS_OF_DT)
+
+#.. is UNIT_LBL unique for each measure (we hope)? ----
+UNIT_LBL <- chris_m %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL) %>%
+  summarise(nobs=n()) %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  mutate(nlabels=n()) %>%
+  ungroup
+UNIT_LBL %>%   filter(nlabels > 1)
+# good, all measures have only 1 UNIT_LBL
+count(UNIT_LBL, UNIT_LBL)
+#   UNIT_LBL                n
+#   <chr>               <int>
+# 1 Per 1,000 Newborns      1
+# 2 Per 100 Members         2
+# 3 Per 100,000 Members    29
+# 4 Percentage             35
+saveRDS(UNIT_LBL, here::here("data", "ignore", "UNIT_LBL.rds"))
+
+#.. look at MSR_AS_OF_DT ----
+mdates <- chris_m %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, MSR_AS_OF_DT) %>%
+  summarise(nobs=n()) %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  mutate(n_asof=n()) %>%
+  ungroup
+mdates %>% filter(n_asof > 1)
+
+
+count(chris_m, MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL)
+```
+
+
+# take a look at the data and do some light cleaning
 ```{r look}
 load(here::here("data", "ignore", "dsripdata.rdata"))
 ppsm
@@ -129,7 +171,43 @@ ppsa2 %>% filter(is.na(PER_END_DT))
 missids <- ppsa2 %>% filter(is.na(PER_END_DT)) %>% .[["X1"]]
 ppsa %>% filter(X1 %in% missids) # yes, missing in the character data, also; I guess we have to accept it for now
 
+# quick check: is MSR_RESULT approx equal to NUM / DEN?
+tmp <- ppsm2 %>%
+  mutate(msr_calc=MSR_NUM / MSR_DEN * 100, # discovered that it must be x 100 
+         diff=msr_calc - MSR_RESULT) %>%
+  filter(diff!=0)
+quantile(tmp$diff, na.rm=TRUE)
+
+# apparently some of the measures are off by a factor of 100 - which ones??
+
+chris_m <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
+glimpse(chris_m)
+count(chris_m, UNIT_LBL)
+count(chris_m, MSR_AS_OF_DT)
+
+count(chris_m, MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL)
+
 ```
+
+
+## create monthly file with statewide records as pps 99
+```{r add_statewide}
+state <- ppsm2 %>%
+  group_by(MSR_RESULT_ID, PER_END_DT) %>% 
+  summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
+  mutate(PPS_ID=99, PPS_NAME="Statewide", MSR_RESULT=MSR_NUM / MSR_DEN * 100e3)
+
+# add the state total
+numdem2 <- numdem1 %>%
+  bind_rows(numdem1 %>% 
+              group_by(PER_END_DT) %>% 
+              summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
+              mutate(PPS_ID=99, PPS_NAME="Statewide", MSR_RESULT=MSR_NUM / MSR_DEN * 100e3)) %>%
+  arrange(PPS_ID, PER_END_DT)
+
+
+```
+
 
 
 # PPRRES exploration
