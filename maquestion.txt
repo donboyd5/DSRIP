@@ -1,0 +1,44 @@
+How to estimate policy impact using interrupted time series, when outcome variable is a moving average?
+
+Suppose you want to evaluate the impact of a recently implemented policy using interrupted time series because you have no comparison group and the policy was implemented all at once on the implementation date.
+
+Further suppose:
+- the government has collected monthly data on the outcome variable for 24 months prior to policy implementation and 24 months after implementation
+- there is no seasonality in the outcome
+- unfortunately, after collecting the monthly data, the government has chosen to create a 12-month trailing moving average (current period plus prior 11) and seems unable to provide the raw (pre-smoothing) data
+- no factors are likely to affect the outcome other than the passage of time (linearly) and the implementation of the policy
+- you want to do the best you can with these data
+
+What would you do to estimate the impact of the policy, given that the outcome variable is a 12-month moving average? Obviously:
+1) It is autocorrelated
+2) Any policy effects that actually occurred during the period in which the effects are being smoothed into the moving-average outcome variable will be muted (i.e., in the first 11 months)
+
+A few options (in my naive mind) might be:
+
+1) Ignore the issue and use a model of the form
+yma = b0 + b1*time + b2*policy + b3*policy*time + e
+
+where yma is the moving average of y (which is unavailable) and
+policy is 0 in the months before implementation and 1 in all months in which the policy was in effect
+
+2) Replace policy in the model above with a policy variable that is:
+a) 0 in the months before implementation
+b) a fraction during the first 11 months of implementation calculated as month of implementation / 12 (1/12 in month 1 of implementation, 2/12 in month 2, ..., 11/12 in month 11)
+c) 1 in all later months
+
+3) Use a model that has 3 pieces, one for the pre-implementation period, a second for the 12 months in which the pre-period outcomes are being averaged in with the post-period outcomes, and a third for the period after the pre-period outcomes have disappeared from the moving average, such as:
+
+yma = b0 + b1*time + b2*partial + b3*partial*time + b4*full + b4*full*time + e
+
+where:
+a) partial is 1 in the first 11 months of implementation and 0 otherwise
+b) full is 1 in month 12 of implementation or later, and 0 otherwise
+
+4) Same as #3 but make partial a fraction during the first 11 months of implementation as in #2
+
+Something else? Again, the government cannot or will not provide the underlying data before creation of the moving average.
+
+I can provide self-contained R code that constructs an example and estimates the true model and approaches 1-4, if that is appropriate for this site. It seems like approach #4 is best (comes closest to the true effects). But (a) it is just one example and might not be best in general, and more importantly, and (b) this might be a problem that has been thought about many times by others and there might be better approaches and theoretical reasons why a particular approach is best in general.
+
+Many thanks for advice on this.
+

@@ -1,0 +1,248 @@
+---
+title: 'Boyd miscellaneous analysis'
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook: 
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-- setup chunk -->
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r system_specific_values, include=FALSE}
+ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/CMA Files/chris_workflow/data/"
+
+```
+
+
+```{r globals, include=FALSE}
+m_long <- "V_mapp_pps_msr_mo_long.csv"
+a_long <- "v_mapp_pps_msr_ann_long.csv"
+
+ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
+
+dsrip_start <- as.Date("2015-07-1")
+
+```
+
+
+
+```{r libraries, include=FALSE}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("zoo") # for rollapply
+
+library("forecast") # for auto.arima
+
+```
+
+
+```{r functions, include=FALSE}
+ns <- function(df) {names(df) %>% sort}
+
+ma <- function(x, period) {
+  # create trailing moving average of x of length period
+  zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
+}
+
+se <- function(model) {sqrt(diag(vcov(model)))}
+
+```
+
+
+```{r ONETIME_GetAndSaveData}
+# just in case the data change or disappear, get them and save them locally
+# read EVERYTHING as character just in case there are odd things that need to be fixed
+ppsm <- read_csv(paste0(ddir, m_long), col_types = cols(.default= col_character()))
+ppsa <- read_csv(paste0(ddir, a_long), col_types = cols(.default= col_character()))
+ppsnet <- read_csv(paste0(ddir, ppsnet_long), col_types = cols(.default= col_character()))
+
+save(ppsm, ppsa, ppsnet, file=here::here("data", "dsripdata.rdata"))
+
+```
+
+
+# take a look at the data
+```{r look}
+load(here::here("data", "dsripdata.rdata"))
+ppsm
+# which pps's do we have?
+count(ppsm, PPS_ID, PPS_NAME)
+# looks like we should drop  51 DOH Demonstration PPS
+
+# do some light data cleaning on monthly data ----
+ppsm2 <- ppsm %>%
+  mutate(PPS_ID=as.integer(PPS_ID),
+         PER_END_DT=as.Date(str_sub(PER_END_DT, 1, 10))) %>% # 2014-06-30 has time included, don't parse that
+  mutate_at(vars(MSR_NUM, MSR_DEN, MSR_RESULT, PERFRM_GOAL), ~as.numeric(.))
+summary(ppsm2)
+
+# look at some missing values
+ppsm2 %>% filter(is.na(MSR_NUM))
+# are they really missing? look at the character data
+missids <- ppsm2 %>% filter(is.na(MSR_NUM)) %>% .[["X1"]]
+ppsm %>% filter(X1 %in% missids) # yes, missing in the character data, also; I guess we have to accept it for now
+
+
+# compare to what Chris created to see if there are differences
+tmp <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
+# whoa, he has 143k obs in the rds file vs only 57k obs in the csv file -- why???
+glimpse(ppsm2); glimpse(tmp)
+setdiff(names(tmp), names(ppsm)) 
+# Chris has these add'l vars: PRCS_DT, DSRIP_PROJ_ID, DSRIP_PROJ_TITLE, MSR_AS_OF_DT, MSR_RESULT_NAME, UNIT_LBL
+setdiff(names(ppsm), names(tmp)) # ppsm has the row number, that's the only difference
+# so the csv file must not really be raw data, but rather something Chris created from the project data
+# I think we probably want MSR_AS_OF_DT, may want to come back to that at some point, but for now, use the csv long data he created
+
+# are the missing values in ppsm also missing in Chris's data? pick one
+tmp %>% filter(PPS_ID==9, PER_END_DT=="2017-03-31", MSR_RESULT_ID=="FPCRES") # yes, missing there, too
+# tentative conclusion for now - use the long csv data
+
+# similar light data cleaning on annual data ----
+ppsa2 <- ppsa %>%
+  mutate(PPS_ID=as.integer(PPS_ID),
+         PER_END_DT=as.Date(str_sub(PER_END_DT, 1, 10))) %>% # 2014-06-30 has time included, don't parse that
+  mutate_at(vars(MSR_NUM, MSR_DEN, MSR_RESULT, PERFRM_GOAL), ~as.numeric(.))
+summary(ppsa2) # why are some dates missing
+ppsa2 %>% filter(is.na(PER_END_DT))
+missids <- ppsa2 %>% filter(is.na(PER_END_DT)) %>% .[["X1"]]
+ppsa %>% filter(X1 %in% missids) # yes, missing in the character data, also; I guess we have to accept it for now
+
+```
+
+
+# PPRRES exploration
+## Data  prep
+```{r PPRRES_data}
+
+# does PPRRES potentially avoidable readmissions look ok??
+dfm <- ppsm2 %>% 
+  filter(MSR_RESULT_ID=="PPRRES", PPS_ID!=51) # don't drop NAs, let plots tell us if there are any after dropping 51
+summary(dfm)
+# dates are 2014-04-31 through 2019-01-31
+
+dfa <- ppsa2 %>% filter(MSR_RESULT_ID=="PPRRES", PPS_ID!=51) 
+summary(dfa)
+
+```
+
+## Facet plots
+```{r}
+
+# let's compare annual and monthly
+df <- bind_rows(dfm %>% mutate(freq="monthly"),
+                dfa %>% mutate(freq="annual"))
+summary(df) # no NAs
+
+p <- df %>%
+  mutate(idname=paste0(str_pad(PPS_ID, 2, pad="0"), ": ", PPS_NAME) %>% str_wrap(25)) %>% # zero-pad for better sorting
+  ggplot(aes(PER_END_DT, MSR_RESULT, colour=freq)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+  facet_wrap(~idname, scales = "free", ncol=5) +
+  ggtitle("PPRRES potentially avoidable readmissions monthly and annual - vertical line marks DSRIP start",
+          subtitle="from Chris dropbox files")
+ggsave(here::here("results", "PPRRES_freq_facet.png"), plot=p, width=10, height=8, scale=2)
+# some pretty strange movements
+
+
+# now let's add the performance goal
+dfp <- bind_rows(dfm %>% mutate(type="monthly", value=MSR_RESULT),
+                 dfm %>% mutate(type="goal", value=PERFRM_GOAL),
+                 dfa %>% mutate(type="annual", value=MSR_RESULT)) %>%
+  mutate(type=factor(type, levels=c("monthly", "annual", "goal"))) %>% # so legend sorts as desired
+  arrange(type)
+p <- dfp %>%
+  mutate(idname=paste0(str_pad(PPS_ID, 2, pad="0"), ": ", PPS_NAME) %>% str_wrap(25)) %>% # zero-pad for better sorting
+  ggplot(aes(PER_END_DT, value, colour=type)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+  facet_wrap(~idname, scales = "fixed", ncol=5) +
+  ggtitle("PPRRES potentially avoidable readmissions monthly and annual - vertical line marks DSRIP start",
+          subtitle="from Chris dropbox files")
+ggsave(here::here("results", "PPRRES_type_facet.png"), plot=p, width=10, height=8, scale=2)
+
+```
+
+
+## look at numerators and denominators
+```{r}
+# Per the reporting manual
+# Numerator: Number of readmission chains (at risk admissions followed by one or more clinically related
+#   readmissions within 30 days of discharge)
+# Denominator: Number of people as of June 30 of the measurement year
+# Performance goal: 180.66 per 100,000 Medicaid Enrollees *High Perf Elig # SW measure
+
+# let's just use monthly, and create a statewide total, too
+numdem1 <- dfm %>%
+  select(-X1, -MSR_RESULT_ID, -PERFRM_GOAL)
+# add the state total
+numdem2 <- numdem1 %>%
+  bind_rows(numdem1 %>% 
+              group_by(PER_END_DT) %>% 
+              summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
+              mutate(PPS_ID=99, PPS_NAME="Statewide", MSR_RESULT=MSR_NUM / MSR_DEN * 100e3)) %>%
+  arrange(PPS_ID, PER_END_DT)
+
+ndlong <- numdem2 %>%
+  pivot_longer(starts_with("MSR"))
+
+ndlong %>% 
+  filter(PPS_ID==43) %>% 
+  pivot_wider() %>%
+  kable(format="rst", digits=1, format.args=list(big.mark=","))
+
+# how do statewide numerators and denominators look?
+ndlong %>%
+  filter(PPS_ID==99, name!="MSR_RESULT") %>%
+  group_by(name) %>%
+  mutate(value_indexed=value / value[PER_END_DT=="2014-06-30"] * 100) %>%
+  ggplot(aes(PER_END_DT, value_indexed, colour=name)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = dsrip_start, colour="blue", linetype="dashed") +
+  geom_hline(yintercept = 100)
+
+p <- ndlong %>%
+  filter(name %in% c("MSR_NUM", "MSR_DEN")) %>%
+  mutate(idname=paste0(str_pad(PPS_ID, 2, pad="0"), ": ", PPS_NAME) %>% str_wrap(25),
+         name=factor(name, levels=c("MSR_NUM", "MSR_DEN"))) %>% # for legend sort
+  group_by(PPS_ID, idname, name) %>%
+  mutate(value_indexed=value / value[PER_END_DT=="2014-06-30"] * 100) %>%
+  ggplot(aes(PER_END_DT, value_indexed, colour=name)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = dsrip_start, colour="blue", linetype="dashed") +
+  geom_hline(yintercept = 100) +
+  facet_wrap(~idname, ncol=5, scales="free") +
+  ggtitle("PPRRES potentially avoidable readmissions numerator and denominator - vertical line marks DSRIP start",
+          subtitle="Scaled to 2014-06-30=100.  Note: data are from Chris dropbox files")
+ggsave(here::here("results", "PPRRES_numdem_facet.png"), plot=p, width=10, height=8, scale=2)
+  
+
+
+```
+
+

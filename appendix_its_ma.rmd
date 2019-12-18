@@ -1,0 +1,581 @@
+---
+title: 'Interrupted Time Series When the Outcome Variable is a Moving Average'
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook: 
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+editor_options: 
+  chunk_output_type: inline
+---
+
+<!-- setup chunk -->
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+The data provided by the Department of Health for many outcome variables are 12-month trailing moving averages of monthly values. DOH apparently is unable to provide the underlying monthly values. The moving-average outcomes data require special treatment when conducting interrupted time series (ITS) analysis to ensure that we properly estimate the impact of DSRIP. This appendix explains the method we use and why.
+
+NOTE: This appendix is fully reproducible by running the R program file "appendix_its_ma.rmd".
+
+
+# Issues created by moving average data
+The moving-average outcomes data create two main issues:
+
+1. **Lagged and muted effects**:  Effects from the DSRIP policy intervention will appear only gradually in the moving-average values of the outcome. These effects will be misestimated and likely underestimated if we use a typical ITS model without adjustment.
+2. **Autocorrelated errors**: Simple models of the moving-average outcomes will have errors that are correlated over time.
+
+Both issues can be addressed.
+
+# A way to address these issues
+If we had the "true" data (the underlying monthly values, rather than the 12-month moving averages), we could estimate a simple ITS model. Assuming (for now) a linear trend and no seasonality, we might estimate the following simple model:
+
+y = b0 + b1 * time + b2 * policy + b3 * policy * time + e
+
+where y is the actual monthly variable, time is a trend variable, and policy is an indicator variable that is 1 beginning when DSRIP went into effect and 0 in every prior month. The coefficient b2 allows for a change in intercept (for example, an increase in the outcome after DSRIP goes into effect) and b3 allows for a change in slope after DSRIP goes into effect.
+
+However,if we do not have actual monthly values for y but only have 12-month trailing moving-average values (y_ma), this model is inappropriate. 
+
+For reasons we give below, we instead estimate a model in which the dependent variable is a moving average and the independent variables are moving averages of the independent variables above.
+
+
+# Explanation of this approach
+Here we show the proper model. Begin by adding a time subscript for all variables in the true model so that the value of y for a particular time is:
+
+y[t] = b0 + b1 * time[t] + b2 * policy[t] + b3 * policy[t] * time[t] + e[t]
+
+The value for the moving average of the outcome at time t is y_ma[t]. This is calculated as:
+
+y_ma[t] =
+
+          (y[t] +
+
+           y[t-1] +
+           
+           y[t-2] +
+           
+           ...
+           
+           y[t-11]) / 12
+           
+This can be rewritten as the average of the righthand side of the true model above, or:
+
+y_ma[t] = 
+
+          (b0 + b1 * time[t]    + b2 * policy[t]    + b3 * policy[t]    * time[t]    + e[t] +
+          
+           b0 + b1 * time[t-1]  + b2 * policy[t-1]  + b3 * policy[t-1]  * time[t-1]  + e[t-1] +
+           
+           b0 + b1 * time[t-2]  + b2 * policy[t-2]  + b3 * policy[t-2]  * time[t-2]  + e[t-2] +
+           
+           ....
+           
+           b0 + b1 * time[t-11] + b2 * policy[t-11] + b3 * policy[t-11] * time[t-11] + e[t-11]) / 12
+           
+
+Rearranging terms and dividing each term by 12 gives:
+
+y_ma[t] = 
+
+         (12 * b0 / 12) +
+         
+               b1 * (time[t] + time[t-1] + time[t-2] + ... + time[t-11]) /12 +
+               
+               b2 * (policy[t] + policy[t-1] + policy[t-2] + ... + policy[t-11]) /12 +
+               
+               b3 * (policy[t] * time[t] + policy[t-1] * time[t-1] + policy[t-2] * time[t-2] + ... + policy[t-11] * time[t-11]) /12 +
+               
+                    (e[t] + e[t-1] + e[t-2] + ... + e[t-11]) /12
+
+           
+Which simplifies to:
+
+y_ma[t] = b0 + b1 * ma12(time[t]) + b2 * ma12(policy[t]) + b3 * ma12(policy[t] * time[t]) + ma12(e[t])
+
+where ma12(x[t]) is the 12-month trailing moving average of the variable x in time period t.
+
+
+Thus, the coefficients in a model with the moving-average of the outcome as the dependent variable and moving averages of the independent variables plus a moving-average error term, are the same as the coefficients in the true model.
+
+**This is nice from the perspective of interpretation and communication. We can present the same kinds of coefficients and standard errors as are in traditional ITS presentations, and as are in the interim evaluation report now, and they can be interpreted easily. And we don't need to present the moving-average error term if we don't want to. (I wouldn't.) We can just make sure we say that we did it. We can have a footnote that says available upon request, or something like that.**
+
+There are two more things we can do to make interpretation easy for our readers:
+
+1. Define the time or trend variable so that the final pre-intervention month is month number 0, and the first intervention month is number 1. Thus, if we have 13 months of pre-intervention data and 24 months of intervention data (37 observations), the pre-intervention period will be numbered from -12 to 0 (13 points), and the intervention period will be numbered from 1 to 24. This makes interpretation of the coefficients really easy as you will see below.
+
+2. Create graphs that show the implications of just the intervention coefficients (policy + policy * time in the graphs below). This shows the intervention effect nicely.
+
+The analysis below with illustrative data shows that this works well.
+
+Thus, in this project we estimate this model.
+
+
+# Illustration of the appropriateness of the approach, using constructed data
+In this section we create an illustrative dataset that has actual monthly values of an outcome variable for which we know the true impact of a policy intervention. We create a moving average of the outcome variable. 
+
+We then estimate ITS models using a simple method plus two versions of the method we describe above, and show that the method we use produces results that are much closer to the true impact of the policy than those from the simple model.
+
+```{r libraries, include=FALSE}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("zoo") # for rollapply
+
+library("forecast") # for auto.arima
+
+```
+
+
+```{r functions, include=FALSE}
+ma <- function(x, period) {
+  # create trailing moving average of x of length period
+  zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
+}
+
+se <- function(model) {sqrt(diag(vcov(model)))}
+
+```
+
+
+## Create a small dataset similar to data used in the evaluation
+We create an illustrative data set with 60 monthly observations (5 years), 36 of which are BEFORE DSRIP goes into effect and 24 of which are after DSRIP goes into effect
+
+The set data has the following variables:
+
+* y: the monthly value of the outcome variable - the true value, not a moving average
+* time: we define this so that it is 1 in the first year in which DSRIP is in effect. Thus, the 
+  value of time 
+* policy is an indicator of when the policy change went into effect. It is 1 for time
+
+
+In our example data we KNOW the true effect of the policy, which follows an ITS model
+
+y = b0 + b1*time + b3*policy + b4*policy*time
+
+
+```{r define_impact}
+# baseline model for outcome variable
+b0 <- 100 # intercept
+b1 <- -1 # slope
+
+# policy impacts
+b2 <- 2.2 # policy intercept shift
+b3 <- 1.65 # policy slope shift
+
+errSD <- 1.25 # SD of random error
+
+time1 <- -35:24
+
+set.seed(1234); err1 <- rnorm(n=length(time1), sd=errSD)
+
+```
+
+
+```{r create_data, message=FALSE, warning=FALSE, include=FALSE}
+params <- c(b0, b1, b2, b3)
+
+dfraw <- tibble(time=time1,
+             policy=ifelse(time > 0, 1, 0),
+             shift_effect=b2 * policy,
+             slope_effect=b3 * policy * time,
+             y_true = b0 + b1*time + shift_effect + slope_effect, # the true unknown value
+             err=err1, # note that errors are homoscedatic by design - not likely in real data
+             y = y_true + err) # the observed value
+
+# quick look to make sure the data seem useful
+dfraw %>% 
+  gather(variable, value, starts_with("y")) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept=0.5, linetype="dashed") +
+  geom_hline(yintercept = 100, linetype="dashed")
+
+# add moving averages
+dfraw <- dfraw %>%
+  mutate(y_ma=ma(y, 12),
+         policy_ma=ma(policy, 12),
+         time_ma=ma(time, 12),
+         joint_ma=ma(time * policy, 12),
+         err_ma=ma(err, 12))
+
+```
+
+
+The plot below shows y and its moving average.
+
+```{r yyma_plot, echo=FALSE, message=FALSE, warning=FALSE}
+# plot y and its moving average
+p <- dfraw %>% 
+  # filter(time %in% -6:12) %>% # zoom in on the phase-in period
+  gather(variable, value, y, y_ma) %>%
+  mutate(variable=factor(variable, 
+                         levels=c("y", "y_ma"), 
+                         labels=c("y true", "y moving\n average"))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept=0.5, linetype="dashed") +
+  # geom_hline(yintercept = 100, linetype="dashed") +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(0, 200, 5)) +
+  annotate("text", x=12, y=125, label="Moving average\nshows less improvement\nthan true value") +
+  theme_bw() +
+  theme(legend.title = element_blank()) +
+  ggtitle("True outcome variable and its 12-month moving average")
+p
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# run these lines individually to see the acf and pacf; will not appear in the html output
+Acf(dfraw$y)
+Acf(dfraw$y_ma)
+
+Pacf(dfraw$y)
+Pacf(dfraw$y_ma)
+
+```
+
+
+
+## Model 0: ITS model estimated on the true data, all observations (including the first 11, which are lost to the moving-average data)
+This model produces the coefficients we will want to compare our estimates to.
+```{r mod_true, echo=FALSE, message=FALSE, warning=FALSE}
+# first, estimate the true model to see how much impact err has
+# this uses the full true data where y includes a random error so coefficients won't be exactly right
+# but these are the coefficients we will want to compare our model results to
+m_mod0 <- lm(y ~ time + policy + I(policy*time), data=dfraw)
+summary(m_mod0)
+
+cat("\nCompare to true parameters: \n")
+params
+
+# save coefficients from this model as we will want to compare models estimated using moving-average data to this
+comps <- coefficients(m_mod0)
+
+# Acf(residuals(m_mod0))
+
+```
+
+
+## Estimate ITS models using the moving-average data
+```{r mod_data, echo=FALSE, message=FALSE, warning=FALSE}
+# create data frame with just the observations we need
+dfmod <- dfraw %>% 
+  filter(!is.na(y_ma))
+
+```
+
+
+### Model 1: simple model that uses the moving-average dependent variable and makes no adjustments on the RHS
+The simple model mis-estimates the policy effects substantially.
+```{r simple, echo=FALSE, message=FALSE, warning=FALSE}
+m_mod1 <- lm(y_ma ~ time + policy + I(policy*time), data=dfmod)
+summary(m_mod1)
+
+cat("\nCompare to Model 0: \n")
+comps
+
+# params
+# Acf(residuals(m_mod1))
+
+# plot the policy effects over 2 years
+
+effects <- tibble(time=1:24) %>%
+  mutate(emod0=coef(m_mod0)["policy"] + coef(m_mod0)["I(policy * time)"] * time,
+         emod1=coef(m_mod1)["policy"] + coef(m_mod1)["I(policy * time)"] * time)
+
+levs <- c("emod0", "emod1")
+labs <- c("Model using actual monthly data",
+          "Simple model using moving average (MA) only for dependent variable (interim report)")
+
+p <- effects %>%
+  gather(variable, value, -time) %>%
+  mutate(variable=factor(variable,
+                         levels=levs,
+                         labels=str_wrap(labs, 25))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(0, 200, 5)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Policy effects estimated from simple model, first 2 years of effect")
+p
+
+```
+
+### Model 2a: Preferred independent variables (moving averages) AND TRUE moving-average error term
+This is just a check. Estimate a model with all MA terms on the RHS, including the MA of the error term. Because we created these error terms, we know this in our example, but in any real analysis we would not know the true error term and part of our job is to decide what error structure we would include in the model.
+
+Because we use the MA of the true errors in Model 2a, the parameters estimated from this MA model should be identical to the true parameters we used to construct the (non-moving-average) data. It should be a perfect model. This is just a check.
+```{r}
+# what if we actually knew the error term?
+m_mod2a <- lm(y_ma ~ time_ma + policy_ma + joint_ma + err_ma, data=dfmod)
+summary(m_mod2a)
+
+cat("\nCompare to true parameters: \n")
+params
+
+```
+
+
+### Model 2: Preferred independent variables (moving averages) but no correction for the moving-average error term
+Estimate Model 2, which is the same as Model 2a except we do not include the error term because we do not know it. 
+
+Look at the acf and pacf of the residuals. The high correlation in the pacf at lag 1 suggests an AR(1) error term.
+```{r mod_goodrhs}
+# run the proper model without moving-average error term
+m_mod2 <- lm(y_ma ~ time_ma + policy_ma + joint_ma, data=dfmod)
+summary(m_mod2)
+
+cat("\nCompare to Model 0: \n")
+comps
+
+Acf(residuals(m_mod2))
+Pacf(residuals(m_mod2)) # ** the high correlation at lag 1 suggests AR(1) **
+
+```
+
+
+
+### Models 3 and 4: Preferred independent variables (moving averages) AND simple correction for the moving-average error term
+We run 2 models below:
+
+*  Model 3: use a simple AR(1) error term correction based on analysis of residuals (pacf) from the model above.
+*  Model 4: run auto.arima and see what it chooses. Look at the order shown in the call. For most true models (coefficients) and random errors it chooses AR(1), i.e., order = c(1, 0, 0), but with some data it will choose other models.
+
+```{r mod_ar}
+# but in reality we won't know it; first we try adding a simple AR term to the model
+xvars <- as.matrix(dfmod[, c("time_ma", "policy_ma", "joint_ma")])
+
+m_mod3 <- arima(dfmod$y_ma, xreg=xvars, order=c(1,0,0))
+m_mod3
+
+cat("\nCompare to Model 0: \n")
+comps
+
+# Acf(residuals(m_mod3))
+
+# next we see what auto-arima says
+m_mod4 <- auto.arima(dfmod$y_ma, xreg=xvars)
+m_mod4
+
+cat("\nCompare to Model 0: \n")
+comps
+
+#Acf(residuals(m_mod4))
+#Pacf(residuals(m_mod4))
+
+```
+
+
+### Model 5 (preferred): Preferred independent variables AND moving average error term with coefficients fixed at 1
+Now the coefficients on the policy variables should be good (close to those from those from the model estimated using the underlying data without moving averages) and we should see no significant autocorrelation in the residuals.
+```{r mod_best}
+# Finally, we can do better given that we know what the error structure is.
+# It includes a moving average of the 11 previous errors so we use order c(0, 0, 11)
+# All previous errors are weighted equally so we fix the 11 MA coefficients at 1
+# We need to use NA for the other 4 coefficients (intercept, time_ma, policy_ma, joint_ma) so that they will be estimated.
+m_mod5 <- arima(dfmod$y_ma, xreg=xvars, order=c(0, 0, 11), fixed = c(rep(1, 11), NA, NA, NA, NA ))
+m_mod5
+
+cat("\nCompare to Model 0: \n")
+comps
+
+Acf(residuals(m_mod5))
+Pacf(residuals(m_mod5))
+# summary(m_mod0)
+# summary(m_mod5)
+
+
+```
+
+
+
+# Month-by-month estimated impacts, alternative models
+
+```{r results}
+# compile the results. We will want to compare model results to those from mod0, which was estimated with the true data,
+# including the random noise we added to it (its coefficients won't be exactly the same as etrue below because of the noise)
+effects <- tibble(time=1:24) %>%
+  mutate(etrue=b2 + b3 * time,
+         emod0=coef(m_mod0)["policy"] + coef(m_mod0)["I(policy * time)"] * time,
+         emod1=coef(m_mod1)["policy"] + coef(m_mod1)["I(policy * time)"] * time,
+         emod2=coef(m_mod2)["policy_ma"] + coef(m_mod2)["joint_ma"] * time,
+         emod3=coef(m_mod3)["policy_ma"] + coef(m_mod3)["joint_ma"] * time,
+         emod4=coef(m_mod4)["policy_ma"] + coef(m_mod4)["joint_ma"] * time,
+         emod5=coef(m_mod5)["policy_ma"] + coef(m_mod5)["joint_ma"] * time)
+
+models <- c("etrue", "emod0", "emod1", "emod2", "emod3", "emod4", "emod5")
+modnames <- c("True Model, no error",
+              "Model 0: estimated on actual monthly data with random noise (compare to this)",
+              "Model 1: moving average (MA) only for dependent variable (interim report)",
+              "Model 2: MA for depvar and for independent variables, but no correction for errors",
+              "Model 3: MA for depvar and for independent variables, plus AR(1) term",
+              "Model 4: MA for depvar and for independent variables, chosen by auto.arima",
+              "Model 5: Best model: MA for depvar and for independent variables, restricted MA error term")
+names(modnames) <- models
+
+```
+
+
+```{r summary}
+vnames <- c("time", models)
+colnames <- c("time", modnames)
+names(colnames) <- vnames
+# colnames["emod3"]
+# Note: ok to put html breaks in colnames -- e.g., "very<br/>long name"
+
+effects  %>%
+  select(time, emod0, emod1, emod2, emod3, emod5) %>%
+  kable(format="html", col.names=colnames[names(.)], escape=FALSE, digits=2)
+
+```
+
+
+```{r fig.height=6, fig.width=10}
+levs <- c("emod0", "emod1", "emod2", "emod3", "emod5")
+labs <- modnames[levs]
+
+p <- effects %>% 
+  select(time, emod0, emod1, emod2, emod3, emod5) %>%
+  gather(variable, value, -time) %>%
+  mutate(variable=factor(variable,
+                         levels=levs,
+                         labels=str_wrap(labs, 25))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(0, 200, 5)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Estimated impact of policy under different modeling approaches")
+p
+
+
+p1 <- effects %>% 
+  select(time, emod0, emod1, emod2, emod3, emod5) %>%
+  mutate_at(vars(emod2, emod1, emod3, emod5), ~ . - emod0) %>%
+  gather(variable, value, -time, -emod0) %>%
+  mutate(variable=factor(variable,
+                         levels=levs,
+                         labels=str_wrap(labs, 25))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(-50, 50, .5)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Estimated policy impacts with moving-average data under alternative modeling approaches",
+          subtitle="Alternative model minus estimates from non-moving-average data (Model 0)")
+p1
+
+p2 <- effects %>% 
+  select(time, emod0, emod5) %>%
+  gather(variable, value, -time) %>%
+  mutate(variable=factor(variable,
+                         levels=levs,
+                         labels=str_wrap(labs, 25))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(0, 200, 5)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Comparison of best model to true model, both estimated on data with random noise")
+p2
+
+
+```
+
+
+
+# Policy-effect coefficients, standard errors, and effects calculated for months 1 and 24
+Note that Model 5 coefficients and standard errors (estimated using the moving-average data) are quite close to their counterparts in Model 0 (estimated with the raw monthly data, which we wish we had). The other models are further away. Also, the standard errors from these other models are too small, giving a false sense of precision.
+```{r tab}
+
+# policy I(policy * time)
+getvals <- function(modname){
+  # return a df row with the following columns:
+  # type, intercept, slope, intercept, slope_se, intercept_se, effect_m1, effect_m24
+  
+  # I could have made this less complicated with better planning...
+
+  # define parameters assuming we have the true model (modname=="etrue")
+  intercept <- b2
+  slope <- b3
+  intercept_se <- 0
+  slope_se <- 0
+  
+  if(modname != "etrue") {
+    # get the model number, full model name, and selected statistics
+    modnum <- str_sub(modname, -1)
+    if(modnum %in% 0:1) {
+      intercept_name <- "policy"
+      slope_name <- "I(policy * time)"
+    } else {
+      intercept_name <- "policy_ma"
+      slope_name <- "joint_ma"
+    }
+    full_modname <- paste0("m_mod", modnum)
+    model_results <- get(full_modname, envir = .GlobalEnv)
+    intercept <- coef(model_results)[intercept_name]
+    slope <- coef(model_results)[slope_name]
+    intercept_se <- se(model_results)[intercept_name]
+    slope_se <- se(model_results)[slope_name]
+  }
+  
+  tibble(type=modnames[modname], 
+         policy_intercept=intercept,
+         policy_slope=slope,
+         intercept_se=intercept_se,
+         slope_se=slope_se)
+}
+
+evals <- bind_rows(getvals("etrue"), 
+                   getvals("emod0"), 
+                   getvals("emod1"), 
+                   getvals("emod2"), 
+                   getvals("emod3"), 
+                   getvals("emod4"), 
+                   getvals("emod5")) %>%
+  mutate(effect_month1=policy_intercept + policy_slope, 
+         effect_month24=policy_intercept + policy_slope * 24)
+
+evals %>%
+  kable(digits = 3) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE, position = "left")
+
+```
+
+
+

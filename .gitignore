@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.pdf
+*.html
+*.png
+
+# note that I do NOT ignore xlsx files -- if they are to be ignored, put them in the ignore folder
+data/ignore/
+
+

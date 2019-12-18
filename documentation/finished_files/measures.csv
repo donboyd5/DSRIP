@@ -1,0 +1,71 @@
+Msr_Result_ID,Msr_Result_Name,Unit_Lbl,UOM
+W15RES,Well Care Visits in the first 15 months (5 or more Visits),Percentage,100
+SSDRES,Diabetes Screening for People with Schizophrenia or Bipolar Disease who are Using Antipsychotic Medication,Percentage,100
+SPCRECRES,Statin Therapy for Patients with Cardiovascular Disease - Received Statin Therapy,Percentage,100
+SPCADHRES,Statin Therapy for Patients with Cardiovascular Disease - Statin Adherence 80%,Percentage,100
+SMDRES,Diabetes Monitoring for People with Diabetes and Schizophrenia,Percentage,100
+SMCRES,Cardiovascular Monitoring for People with Cardiovascular Disease and Schizophrenia,Percentage,100
+SAARES,Adherence to Antipsychotic Medications for People with Schizophrenia,Percentage,100
+PQI9RES,Prevention Quality Indicator # 9 (Low Birth Weight Rate) +/-,"Per 1,000 Newborns",1000
+PQI92V2RES,Prevention Quality Indicator # 92 (Prevention Quality Chronic Composite) +/-,"Per 100,000 Members",100000
+PQI92RES,Prevention Quality Indicator # 92 (Prevention Quality Chronic Composite) +/-,"Per 100,000 Members",100000
+PQI91RES,Prevention Quality Indicator # 91 (Prevention Quality Acute Composite) +/-,"Per 100,000 Members",100000
+PQI90V2RES,Prevention Quality Indicator # 90 (Overall Composite) +/-,"Per 100,000 Members",100000
+PQI90RES,Prevention Quality Indicator # 90 (Overall Composite) +/-,"Per 100,000 Members",100000
+PQI8RES,Prevention Quality Indicator # 8 (Heart Failure Admission Rate) +/-,"Per 100,000 Members",100000
+PQI7RES,Prevention Quality Indicator # 7 (Hypertension Admission Rate)  +/-,"Per 100,000 Members",100000
+PQI5RES,Prevention Quality Indicator # 5 (COPD or Asthma in Older Adults Admission Rate) +/-,"Per 100,000 Members",100000
+PQI3RES,Prevention Quality Indicator # 3 (Diabetes Long-Term Complications Admission Rate) +/-,"Per 100,000 Members",100000
+PQI1RES,Prevention Quality Indicator # 1 (Diabetes Short-Term Complications Admission Rate)  +/-,"Per 100,000 Members",100000
+PQI16RES,Prevention Quality Indicator # 16 (Lower-Extremity Amputation Among Patients with Diabetes Rate) +/-,"Per 100,000 Members",100000
+PQI15RES,Prevention Quality Indicator # 15 (Asthma in Younger Adults Admission Rate)  +/-,"Per 100,000 Members",100000
+PQI14RES,Prevention Quality Indicator # 14 (Uncontrolled Diabetes Admission Rate) +/-,"Per 100,000 Members",100000
+PQI13RES,Prevention Quality Indicator # 13 (Angina Without Procedure)  +/-,"Per 100,000 Members",100000
+PQI12RES,Prevention Quality Indicator # 12 (Urinary Tract Infection Admission Rate) +/-,"Per 100,000 Members",100000
+PQI11RES,Prevention Quality Indicator # 11 (Bacterial Pneumonia Admission Rate) +/-,"Per 100,000 Members",100000
+PQI10RES,Prevention Quality Indicator # 10 (Dehydration Admission Rate) +/-,"Per 100,000 Members",100000
+PPVRES,Potentially Avoidable Emergency Room Visits  +/-,Per 100 Members,100
+PPVBHRES,Potentially Preventable Emergency Department Visits (for persons with BH diagnosis) +/-,Per 100 Members,100
+PPRRES,Potentially Avoidable Readmissions   +/-,"Per 100,000 Members",100000
+PDI92RES,Pediatric Quality Indicator  # 92 (Pediatric Quality Chronic Composite) +/-,"Per 100,000 Members",100000
+PDI91RES,Pediatric Quality Indicator  # 91 (Pediatric Quality Acute Composite) +/-,"Per 100,000 Members",100000
+PDI90RES,Pediatric Quality Indicator  # 90 (Overall Composite) +/-,"Per 100,000 Members",100000
+PDI18RES,Pediatric Quality Indicator  # 18 (Urinary Tract Infection Admission Rate) +/-,"Per 100,000 Members",100000
+PDI16RES,Pediatric Quality Indicator  # 16 (Gastroenteritis Admission Rate) +/-,"Per 100,000 Members",100000
+PDI15RES,Pediatric Quality Indicator  # 15 (Diabetes Short-Term Complications Admission Rate) +/-,"Per 100,000 Members",100000
+PDI14RES,Pediatric Quality Indicator  # 14 (Asthma Admission Rate) +/-,"Per 100,000 Members",100000
+MMA75RES,Medication Management for People with Asthma (5 - 64 Years) - 75% of Treatment Days Covered,Percentage,100
+MMA50RES,Medication Management for People with Asthma (5 - 64 Years) - 50% of Treatment Days Covered,Percentage,100
+IETIRES,Initiation of Alcohol and Other Drug Dependence Treatment (1 visit within 14 days),Percentage,100
+IETERES,Engagement of Alcohol and Other Drug Dependence Treatment (Initiation and 2 visits within 44 days),Percentage,100
+HIVVRES,HIV/AIDS Comprehensive Care -  Viral Load Monitoring,Percentage,100
+HIVSRES,HIV/AIDS Comprehensive Care -  Syphilis Screening,Percentage,100
+HIVERES,HIV/AIDS Comprehensive Care -  Engaged in Care,Percentage,100
+FUH30RES,Follow-up after hospitalization for Mental Illness - within 30 days,Percentage,100
+FUH07RES,Follow-up after hospitalization for Mental Illness - within 7 days,Percentage,100
+CHLRES,Chlamydia Screening (16 - 24 Years),Percentage,100
+CCSRES,Cervical Cancer Screening,Percentage,100
+CAPC7RES,Children's Access to Primary Care - 7 to 11 years,Percentage,100
+CAPC25RES,Children's Access to Primary Care - 25 months to 6 years,Percentage,100
+CAPC12RES,Children's Access to Primary Care - 12 to 19 years,Percentage,100
+CAPC12MRES,Children's Access to Primary Care - 12 to 24 Months,Percentage,100
+AMRRES,Asthma Medication Ratio (5 - 64 Years),Percentage,100
+AMMCONTRES,Antidepressant Medication Management - Effective Continuation Phase Treatment,Percentage,100
+AMMACUTRES,Antidepressant Medication Management - Effective Acute Phase Treatment,Percentage,100
+ADDIRES,Follow-up care for Children Prescribed ADHD Medications - Initiation Phase,Percentage,100
+ADDCRES,Follow-up care for Children Prescribed ADHD Medications - Continuation Phase,Percentage,100
+AAPC65RES,Adult Access to Preventive or Ambulatory Care - 65 and older,Percentage,100
+AAPC45RES,Adult Access to Preventive or Ambulatory Care - 45 to 64 years,Percentage,100
+AAPC20RES,Adult Access to Preventive or Ambulatory Care - 20 to 44 years,Percentage,100
+VLSRES,Viral Load Suppression,Percentage,100
+NA,NA,NA,NA
+PPCSRES,Use of primary and preventive care services-- Percent of attributed Medicaid members with no claims history for primary care and preventive services in measurement year compared to same,Percentage,100
+PPCPRERES,Prenatal and Postpartum Care-Timeliness of Prenatal Care,Percentage,100
+PPCPOSTRES,Prenatal and Postpartum Care-Postpartum Visits,Percentage,100
+FUH30V2RES,Follow-up after hospitalization for Mental Illness - within 30 days,Percentage,100
+FUH07V2RES,Follow-up after hospitalization for Mental Illness - within 7 days,Percentage,100
+FPCRES,Frequency of Ongoing Prenatal Care (81% or more),Percentage,100
+CISRES,Childhood Immunization Status (Combination 3 - 4313314),Percentage,100
+CDFRES,Screening for Clinical Depression and Follow-Up Plan,Percentage,100
+CDCRES,"Comprehensive Diabetes screening - All Three Tests (HbA1c, dilated eye exam, nephropathy monitor)",Percentage,100
+CBPRES,Controlling High Blood Pressure,Percentage,100

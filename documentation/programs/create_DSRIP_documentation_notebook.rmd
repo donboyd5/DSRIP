@@ -1,0 +1,101 @@
+---
+title: "DSRIP Documentation Notebook"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '5'
+  pdf_document:
+    toc: yes
+  html_notebook:
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+always_allow_html: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r system_specific, include=FALSE}
+# ALL system-specific variables -- e.g., location of data files -- should be defined here
+# If run on a different system, change these variables as appropriate
+
+dbox <- "C:/Users/donbo/Dropbox/"
+
+# directory for statewide data
+sw_dir <- paste0(dbox, "DSRIP TSA_CA Team Info/Interim Report Documentation Compiled/statewide analysis by Erika/")
+
+# directory for pps data
+pps_dir <- paste0(dbox, "DSRIP TSA_CA Team Info/Interim Report Documentation Compiled/DOH analysis of PPV and PPVBH/Data_DOH PPV runs/")
+
+# https://github.com/rstudio/bookdown/issues/531
+# devtools::install_github('yihui/tinytex')
+# tinytex::install_tinytex()
+# tinytex:::is_tinytex()
+# devtools::install_github('rstudio/rmarkdown')
+
+```
+
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(here)
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("readxl") # readxl, for .xls and .xlsx files
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("zoo") # for rollapply
+
+library("rmarkdown")
+library("DT")
+
+```
+
+
+# PPS identifying information
+```{r get_pps, echo=FALSE}
+# ppsnames <- read_csv(paste0(PROJHOME, "./documentation/finished_files/ppsnames.csv"))
+ppsnames <- read_csv(here::here("documentation", "finished_files", "ppsnames.csv"))
+
+ppsnames %>% datatable
+
+# paged_table(ppsnames)
+
+```
+
+
+
+# Measures
+```{r get_measures, echo=FALSE}
+# measures <- read_csv(paste0(PROJHOME, "./documentation/finished_files/measures.csv"))
+measures <- read_csv(here::here("documentation/finished_files", "measures.csv"))
+
+measures %>%
+  arrange(Msr_Result_ID) %>%
+  rename("Unit of\nMeasurement (UOM)"=UOM) %>%
+  datatable(.)
+
+# DT::datatable(iris)
+#   rename("Unit of\nMeasurement (UOM)"=UOM) %>%
+#   mutate(Msr_Result_Name=str_wrap(Msr_Result_Name, 50)) %>%
+# paged_table(ppsnames)
+
+```
+
+

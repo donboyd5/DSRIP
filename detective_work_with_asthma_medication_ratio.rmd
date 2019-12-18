@@ -1,0 +1,538 @@
+---
+title: 'Detective work using asthma medication ratio as an example'
+author: "Don Boyd"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook:
+    toc: true
+    toc_depth: 5
+    df_print: paged
+    
+---
+
+We need to do some detective work with the DOH data to help us understand its oddities and whether and when regressions will work.
+
+This note uses the statewide asthma medication ratio as an example of the kinds of things we need to do.
+
+*Definition:* Asthma medication ratio is measured as the percentage of members with a controller-to-total asthma medication ratio of 0.5 or higher, among attributed members aged 5 to 64 years with persistent asthma who received at least one asthma medication.
+
+If a member has a ratio greater than 0.5 it means the majority of their asthma medications are controller medications intended to achieve longer-term control and only a minority of medications are for other purposes such as rescue medications. If the ratio is below 0.5 a majority of the member's asthma medications may be for rescue or other purposes and the condition may not be well-controlled. A higher percentage of members with a ratio of 0.5 or higher means that a higher percentage of members is likely to have well-controlled asthma: higher is better.
+
+The data provided by the Department of Health for many outcome variables are 12-month trailing moving averages of monthly values. DOH is unable to provide the underlying monthly values. The moving-average outcomes data require special treatment when conducting interrupted time series (ITS) analysis to ensure that we properly estimate the impact of DSRIP. This appendix explains the method we use and why.
+
+NOTE: This note is fully reproducible by running the R program file "detective_work_with_asthma_medication_ratio.rmd".
+
+# First, reproduce interim report results for asthma medication ratio
+We have access to the interim report data. Those results were produced in SAS. Let's see if we can reproduce them in R.
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r system_specific, include=FALSE}
+# ALL system-specific variables -- e.g., location of data files -- should be defined here
+# If run on a different system, change these variables as appropriate
+
+dbox <- "C:/Users/donbo/Dropbox/"
+
+# directory for statewide data
+sw_dir <- paste0(dbox, "DSRIP TSA_CA Team Info/Interim Report Documentation Compiled/statewide analysis by Erika/")
+
+# directory for pps data
+pps_dir <- paste0(dbox, "DSRIP TSA_CA Team Info/Interim Report Documentation Compiled/DOH analysis of PPV and PPVBH/Data_DOH PPV runs/")
+
+```
+
+
+
+```{r libraries, message=FALSE, warning=FALSE, include=FALSE}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("readxl") # readxl, for .xls and .xlsx files
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("zoo") # for rollapply
+
+library("forecast") # for auto.arima
+
+```
+
+
+```{r functions, message=FALSE, warning=FALSE, include=FALSE}
+ma <- function(x, period) {
+  # create trailing moving average of x of length period
+  zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
+}
+
+```
+
+
+```{r statewide_data, echo=FALSE, message=FALSE, warning=FALSE}
+# Here is the actual report data
+# sw stands for statewide
+sw_fn <- "2019-07-16 Statewide Time Series.xlsx"
+sw_sheet <- "monthlyvalues071419"
+
+sw <- read_excel(paste0(sw_dir, sw_fn), sheet=sw_sheet) 
+# glimpse(sw)
+
+sw <- sw %>%
+  rename_all(str_to_lower) 
+# sw
+
+# create a data frame with just what we need
+#   per the interim report, the first observation is June 2014
+# IE & DOH define the date of an observation as the last
+amr_sw <- sw %>%
+  mutate(time=time1 - 13, # I like having a time variable that =1 when DSRIP started
+         date=seq.Date(as.Date("2014-06-01"), by="month", length.out=37),
+         DSRIP=ifelse(time1 >= 14, 1, 0)
+         ) %>%
+  select(time1, time, my, my_month, date, DSRIP, amrres)
+
+amr_sw %>%
+  kable(digits=2, caption="Data for analysis") %>%
+  kable_styling()
+
+```
+
+## Reproduce the report graph
+This looks pretty close to the plot on page 151 of the interim report.
+
+```{r report_graph, echo=FALSE, message=FALSE, warning=FALSE}
+# color codes here: http://colorbrewer2.org
+
+# looks like the graph has two linear fits, one before DSRIP and one during DSRIP
+fit1 <- lm(amrres ~ date, data=amr_sw %>% filter(DSRIP==0))
+# summary(fit1)
+fit1df <- fit1$model %>% mutate(fit=fit1$fitted.values) %>% select(date, fit, amrres)
+# fit1df
+
+fit2 <- lm(amrres ~ date, data=amr_sw %>% filter(DSRIP==1))
+# summary(fit2)
+fit2df <- fit2$model %>% mutate(fit=fit2$fitted.values) %>% select(date, fit, amrres)
+# fit2df
+
+
+p <- amr_sw %>% 
+  ggplot(aes(date, amrres)) +
+  geom_point(colour="#e6550d", size=1.5) +
+  geom_line(aes(x=date, y=fit), colour="blue", size=1.0, data=fit1df) +
+  geom_line(aes(x=date, y=fit), colour="blue", size=1.0, data=fit2df) +
+  scale_y_continuous(name="Asthma Medication Ratio", breaks=seq(0, 100, 10), limits=c(0, 80)) +
+  scale_x_date(name=NULL, date_breaks = "years", date_labels = "%Y") +
+  geom_vline(xintercept=as.Date("2015-07-1"), linetype="dashed", colour="blue", size=1) +
+  annotate("text", x=as.Date("2015-10-1"), y=12, label="Post-DSRIP", size=4) + # really this is DSRIP, not post-DSRIP
+  ggtitle("Monthly changes in asthma medication ratio") + # not precisely correct - the plot shows values, not changes
+  theme_bw() +
+  # remove some grid lines
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())
+p
+
+```
+
+
+## Reproduce the report regression results
+The R regression results match the SAS-produced results shown on page 152 of the interim report:
+```{r report_its, echo=FALSE, message=FALSE, warning=FALSE}
+mod_report <- lm(amrres ~ time1 + DSRIP + I(DSRIP * time1), data=amr_sw)
+summary(mod_report)
+
+```
+
+# Explore the data
+
+## Start by taking a closer look at the plot
+The report graph showed a surprising jump in the series somewhere around the beginning of 2016 but it is hard to see because the graph starts at zero and doesn't have many markings. There really isn't a good argument for starting that graph at y=0. We wouldn't expect the baseline we want to compare to to be a situation in which zero percent of members have well-controlled asthma. Comparing to the historical range or some other set of plausible values will give better context.
+
+Let's look at the plot from before but with free axes (chosen by ggplot to show most of the data) and with more axis labels so it is easier to see what is happening when.
+
+```{r explore1, echo=FALSE, message=FALSE, warning=FALSE, fig.height=10, fig.width=10}
+# move the DSRIP line to fall between the final non-DSRIP observation and the first DSRIP observation
+# also, show more x and y axis values
+bigchange <- amr_sw %>%
+  filter(date %in% as.Date(c("2015-11-01", "2015-12-01"))) %>%
+  arrange(date) %>%
+  mutate(change=amrres - lag(amrres)) %>%
+  filter(date=="2015-12-01") %>%
+  .[["change"]]
+
+amr_sw %>%
+  ggplot(aes(date, amrres)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept=as.Date("2015-06-15"), linetype="dashed", colour="blue", size=1.2) +
+  geom_vline(xintercept=as.Date("2016-05-15"), linetype="dashed", colour="blue", size=1.2) +
+  scale_x_date(date_breaks="3 months", date_labels = "%Y-%b") +
+  scale_y_continuous(breaks=seq(50, 100, 0.5)) +
+  annotate("text", x=as.Date("2014-11-01"), y=61.5, hjust=0, vjust=1, label="pre-DSRIP", size=4) +
+  annotate("text", x=as.Date("2015-09-01"), y=61.5, hjust=0, vjust=1,
+           label=str_wrap("DSRIP being phased in to moving-average data", 12), size=4) +
+  annotate("text", x=as.Date("2016-11-01"), y=60.5, hjust=0, vjust=1, 
+           label=str_wrap("DSRIP fully phased in to moving-average data", 12), size=4) +
+  annotate("text", x=as.Date("2015-08-15"), y=60.5, hjust=0, vjust=0.5, 
+           label=sprintf("Change Nov to\nDec 2015: +%-4.1f", bigchange), size=3) +
+  ggtitle("Asthma medication ratio") +
+  theme(axis.text.x=element_text(angle=270, vjust=0.5))
+
+
+
+```
+
+Wow. In the 6th month of DSRIP (Dec 2015) there is a jump of almost 3 percentage points in the percentage of members statewide with well-controlled asthma. It looks like a level shift - that is all later months also appear to be about 3 percentage points higher.
+
+What could explain this? It's important to remember that these data purportedly are 12-month moving averages. What could generate a single-month increase in the value? Here are some things to think about:
+
+One possibility is that the data are correct, and that the underlying data (not the moving average) changed in a way that produced these moving average data.
+
+What would have had to happen in the underlying data in Dec 2015 to make this correct. Suppose that the 11 months ending in Nov 2015 averaged 58 percent, which seems plausible from the graph. To get a 12-month average of 60.5 percent in Dec 2015, the unsmoothed value would have to be approximately 88: (58 x 11 + 88) / 12 = 60.5.
+
+That seems implausible: first, a one-month jump to 88 would be off the chart and a dramatic increase in the number of people with well-controlled asthma. Second, the number would have to fall back down from 88 to about 61 in subsequent months to keep the moving average from rising dramatically in later months. It is hard to imagine what would cause the underlying health care of people to move in such a jigsaw fashion. A data error or manipulation seem like more likely possibilities.
+
+Other possibilities might be:
+- A significant data error after moving averages were computed
+- Data manipulation by a PPS hoping to get higher payments
+- A change in how DOH calculates the measure, although it is hard to see how that could explain it.
+- Something else
+
+Getting the answer is important because it can help us decide what to do about this analytically. If it is a data error, perhaps we can get better data. If it is data manipulation that is noteworthy. If it is a change in calculation, perhaps we can adjust somehow. If we just don't know, perhaps we can make our best guess and make sure that our econometric equation does not get tricked by the data.
+
+Looking at individual PPS's could give us insight into whether this was a systemwide change, or happened just in one PPS, or something else.
+
+
+## Did the same issue arise in individual PPS's?
+```{r pps_data, include=FALSE}
+pps_fn <- "msr_mo_pps.csv"
+pps <- read_csv(paste0(pps_dir, pps_fn))
+glimpse(pps)
+# note that DOH defines the date value for a month as the last day of the month whereas I ordinarily use the first day of the month
+# - pay attention to avoid mistakes
+
+amr_pps <- pps %>%
+  filter(Msr_Result_ID=="AMRRES") %>%
+  mutate(date=as.Date(new_date, "%m/%d/%Y")) %>% # I am ASSUMING new_date is the proper date variable
+  mutate(PPS_Name_wrap=str_wrap(str_sub(paste0(PPS_Short_Name, ": ", PPS_Name), 1, 40), 24)) %>%
+  select(date, PPS_ID, PPS_Short_Name, PPS_Name, PPS_Name_wrap, result, treat, members)
+glimpse(amr_pps)
+
+count(amr_pps, treat)
+count(amr_pps, date)
+count(amr_pps, PPS_ID, PPS_Short_Name, PPS_Name)
+# make sure we understand the treat (DSRIP indicator) variable
+amr_pps %>%
+  group_by(date, treat) %>%
+  summarise(n=n()) %>%
+  spread(treat, n)
+# this shows July 2015 as the first month in which treat==1, which is what we expected; good
+
+amr_pps2 <- amr_pps %>%
+  filter(year(date)<2017) # the only 2017 value in the pps data is for June 30 so drop it
+
+```
+
+
+### Plot of asthma medication ratio by PPS
+Here's a plot of the asthma medication ratio by PPS. The data are not quite concordant with the statewide data - monthly data are missing for most of 2017 - the only available value is for June 2017, which we drop in the analysis below. The solid vertical line denotes the start of DSRIP. The dashed vertical line marks the month in which the statewide asthma medication ratio spiked (Dec 2014). We can see that several PPS's had a spike in that month - most notably New York Presbyterian Queens.
+```{r amr_pps_graph, echo=FALSE, fig.height=10, fig.width=10}
+
+amr_pps2 %>%
+  ggplot(aes(date, result)) + 
+  geom_line(colour="blue") + 
+  geom_point(colour="blue") +
+  geom_vline(xintercept=as.Date("2015-06-15")) + # approx midpoint between pre-DSRIP and DSRIP
+  geom_vline(xintercept=as.Date("2015-12-31"), linetype="dashed") + # the month in which the statewide upward shift occurred
+  facet_wrap(~PPS_Name_wrap, ncol=5) +
+  scale_x_date(name=NULL) +
+  scale_y_continuous(name="Asthma medication ratio") +
+  theme_bw() +
+  ggtitle("Asthma medication ratio by PPS",
+          subtitle="Solid vertical line marks start of DSRIP, dashed vertical line marks date of statewide upward level shift")
+
+
+```
+
+### Plot of month-to-month change in the asthma medication ratio by PPS
+The plot above of the value of the asthma medication ratio makes it hard to see which PPS's had a large month-to-month change in that value in Dec 2015. The next plot shows the month-to-month changes. The solid vertical line marks the start of DSRIP. The dashed vertical line marks Dec 2015. The two dashed horizontal lines at +2 and -2 mark a range in which values typically fall, to make it easier to see when a month-to-month change in the asthma medication ratio is unusual (e.g., above or below one of the dashed lines).
+
+
+```{r amrchange_pps_graph, echo=FALSE, message=FALSE, warning=FALSE, fig.height=12, fig.width=12}
+chgdat <- amr_pps2 %>%
+  group_by(PPS_ID, PPS_Short_Name, PPS_Name, PPS_Name_wrap) %>%
+  arrange(date) %>%
+  mutate(change=result - lag(result),
+         memchange=members - lag(members)) %>%
+  ungroup
+linedat <- chgdat %>% filter(date==as.Date("2015-12-31")) # not used
+
+chgdat %>%
+  ggplot(aes(date, change)) + 
+  geom_line(colour="blue") + 
+  geom_point(colour="blue") +
+  geom_vline(xintercept=as.Date("2015-06-15")) + # approx midpoint between pre-DSRIP and DSRIP
+  geom_vline(xintercept=as.Date("2015-12-31"), linetype="dashed") + # the month in which the statewide upward shift occurred
+  geom_hline(yintercept=0) +
+  facet_wrap(~PPS_Name_wrap, ncol=5) +
+  scale_x_date(name=NULL) +
+  scale_y_continuous(breaks=c(seq(-20, -5, 5), c(-2, 0, 2), seq(5, 20, 5))) +
+  theme_bw() +
+  # geom_hline(aes(yintercept=change), linetype="dashed", data=linedat) +
+  geom_hline(yintercept=-2, linetype="dashed") +
+  geom_hline(yintercept=+2, linetype="dashed") +
+  ggtitle("Month to month-change in asthma medication ratio by PPS",
+          subtitle="Solid vertical line marks start of DSRIP, dashed vertical line marks date of statewide upward level shift")
+# , dashed horizontal line shows the Dec 2015 change
+
+```
+
+
+### How uncommon are large month-to-month changes in the moving-average asthma medication ratio?
+
+The table below gives counts for each month of the number of PPS's that had changes in the AMR of different sizes. Dec 2015 clearly is an outlier month.
+
+```{r amrchange_pps_table, echo=FALSE, message=FALSE, warning=FALSE, rows.print=25}
+# how uncommon are changes of >= 2?
+chgdat %>%
+  filter(date > "2014-06-30") %>%
+  mutate(changegrp=cut(change, c(-Inf, -2, 0, 2, Inf))) %>%
+  select(date, PPS_Short_Name, PPS_Name, result, change, changegrp) %>%
+  group_by(date, changegrp) %>%
+  summarise(n=n()) %>%
+  spread(changegrp, n) %>%
+  mutate_at(vars(-date), ~ ifelse(is.na(.), 0, .)) %>% # convert NAs to 0
+  mutate(total=`(-Inf,-2]` + `(-2,0]` + `(0,2]` + `(2, Inf]`) %>%
+  kable(caption="# of PPS's by size of asthma medication ratio change from prior month") %>%
+  kable_styling()
+
+```
+
+
+The Dec 2015 change was unusual for several PPS's, including New York Presbyterian-Queens, Staten Island PPS, HHC OneCity Health, NYU Langone Brooklyn, and several others. Clearly something is going on with the data. Given that at least 7 PPS's had large changes in that month, it seems unlikely that the data were manipulated by the PPS's - that would require considerable collusion. It seems more likely that the problem occurred within the Department of Health and that the jump in the measure in Dec 2015 is not a result of DSRIP.
+
+### Were the PPS's that had a Dec 2015 spike large PPS's?
+If one or two large PPS's had a Dec 2015 spike, that could cause the statewide average to spike without necessarily suggesting a systemic problem with the data. The table below shows the change in the asthma medication ratio (the moving average) from Nov 2015 to Dec 2015 for each PPS, sorted by descending size, and includes the number of members and rank of each PPS by size of membership (1=largest).
+
+```{r echo=FALSE}
+chgdat %>%
+  filter(date==as.Date("2015-12-31")) %>%
+  select(PPS_Short_Name, PPS_Name, result, change, members) %>%
+  mutate(memrank=rank(members)) %>%
+  arrange(desc(change))
+
+# chgdat %>%
+#   filter(date==as.Date("2015-12-31")) %>%
+#   filter(PPS_Short_Name!="NYPQ") %>%
+#   select(PPS_Short_Name, PPS_Name, result, change, members, memchange) %>%
+#   ggplot(aes(members, change, label=PPS_Short_Name)) +
+#   geom_point() +
+#   geom_text(hjust = 0, nudge_x = 0.05) +
+#   scale_y_continuous(name="Change in asthma medication ratio") +
+#   #scale_x_log10() +
+#   ggtitle("Change in asthma medication ratio from Nov 2015 to Dec 2015 by PPS size (# of members)")
+#   # scale_x_continuous(name="# of plan members in thousands")
+
+
+```
+
+
+# ITS statewide regressions: Addressing the Dec 2015 level shift in the asthma medication ratio
+We compare three statewide ITS regressions in this section:
+
+1. The standard ITS regression presented in the interim report. To make interpretation consistent with the models below, we estimate the model using a time variable that fixes time=1 at the start of DSRIP and counts up and down from there. This doesn't change any model characteristics but makes it easier to interpret.
+2. The variant on the standard ITS regression appropriate for a moving-average outcome variable, discussed elsewhere, that includes moving-average variables on the righthand side along with an autoregressive term
+3. Adding an indicator variable to the variant, for the period that was shifted upward
+
+
+```{r add_variables, include=FALSE}
+# add variables we need for the next two models
+glimpse(amr_sw)
+
+amr_sw2 <- bind_rows(tibble(time1=-10:0), # add 11 prior values so we can compute ma for the first value in the data
+                     amr_sw) %>%
+  mutate(DSRIP=ifelse(time1 >= 14, 1, 0),
+         time=time1 - 13, # I prefer a time variable that counts up or down from 1 at start of DSRIP
+         data_shift=ifelse(time1 >= 19, 1, 0),
+         DSRIP_time=time * DSRIP,
+         time_ma=ma(time, 12),
+         DSRIP_ma=ma(DSRIP, 12),
+         DSRIP.time_ma=ma(DSRIP_time, 12)) %>%
+  filter(time1 >= 1)
+
+# VERIFy that all is good, and rerun the interim-report model to be sure results are the same
+amr_sw2 %>% select(date, time1, time, DSRIP, data_shift)
+glimpse(amr_sw2)
+
+check <- lm(amrres ~ time1 + DSRIP + I(DSRIP * time1), data=amr_sw2)
+summary(check) # all good
+
+# gctorture(FALSE)
+
+```
+
+
+## Model 1: Interim report model presented with time=1 at DSRIP start
+Previously we reproduced the interim report's statewide ITS results for the asthma medication ratio, in R. The graph below shows the autocorrelation structure of the residuals from that model. 
+
+There are two issues we want to address:
+1. The general problem of using a moving-average outcome variable (discussed elsewhere), which we will address by using moving-average variables on the righthand side and adding an autogressive term, and
+
+2. The problem specific to the asthma medication ratio, in which there is a level shift upward of nearly 3 percentage points beginning in Dec 2015, which we cannot plausibly attribute to DSRIP and which we suspect is a data error or an undocumented change in DOH methodology. If we don't adjust for this, our model will attribute much of the shift to DSRIP.
+
+
+Before we address the second issue with alternative models, we reestimate the interim-report model with time=1 beginning with DSRIP, as noted above. **This is simply a change in presentation to ease interpretation.**
+
+
+
+In the interim-report model, the time variable (time1 in the model shown earlier) started at 1, was 14 at the start of DSRIP, and increased from there. It will be easier to interpret if we subtract 13 from every value of time1 so that it is 1 at the start of DSRIP and is -12 at the first observation. We will call this new variable time=time1 - 13. To show that this is just a change in presentation, let's write out and manipulate the model from the report, as estimated above, rounding to 3 decimal places:
+
+`amr = 60.805 - .218 * time1 -4.535 * DSRIP + .379 * DSRIP * time1 + e`
+
+Now rewrite time1 as time + 13 and work out the math:
+
+`amr = 60.805 - .218 * (time + 13) -4.535 * DSRIP + .379 * DSRIP * (time + 13) + e`
+
+Multiply through (2 steps below):
+
+`amr = 60.805 - .218 * time - .218 * 13 -4.535 * DSRIP + .379 * DSRIP * time + .379 * DSRIP * 13 + e`
+
+`amr = 60.805 - .218 * time -  2.834  -4.535 * DSRIP + .379 * DSRIP * time + 4.927*DSRIP + e`
+
+Collect terms:
+
+`amr = 60.805 -  2.834 - .218 * time  -4.535 * DSRIP + 4.927 * DSRIP + .379 * DSRIP * time + e`
+
+Simplify:
+
+`amr = 57.971 - .218 * time + .392 * DSRIP + .379 * DSRIP * time + e`
+
+This is what we expect to see when we estimate the model with a time variable that is 1 in the first DSRIP month. This will be easier to interpret because we can calculate the DSRIP impact in the first DSRIP month when time=1 as `(.392 + .379 = .771)`, whereas the calculation was more complicated and easy to do incorrectly with the original model. In that model, the impact in the first DSRIP month when time1=14 was `(-4.535 + .379*14=.771)`. If the proper value for time1 for the first DSRIP month (i.e., 14) was not used, it was easy to conclude that DSRIP resulted in an initial decline.
+
+One more point worth noting: The estimated standard error on the DSRIP indicator will be different from that on time1.
+
+The final step is to estimate the interim report model in this form, shown below. We get the coefficients we expect (within rounding).
+
+
+```{r mod1, echo=FALSE, message=FALSE, warning=FALSE}
+mod1 <- lm(amrres ~ time + DSRIP + I(DSRIP * time), data=amr_sw)
+summary(mod1)
+# while (!is.null(dev.list()))  dev.off() # solve potential plotting problem in RStudio if needed by resetting graphics device
+
+```
+
+Next we plot the autocorrelation function for the residuals from the interim-report model. It shows significant autocorrelation at the first lag, which we expect given that the dependent variable is a moving average.
+
+```{r mod1_resid, echo=FALSE, message=FALSE, warning=FALSE}
+Acf(residuals(mod1), main="Autocorrelation of residuals: standard ITS model\nStatewide asthma medication ratio (moving average)")
+```
+
+
+
+## Model 2: Standard ITS moving-average model: Moving averages of righthand side variables plus an autoregressive term
+We address the first issue above by using moving-average variables on the righthand side and adding an autoregressive term.
+
+The model shows a large upward shift in level in the DSRIP period (the coefficient on DSRIP_ma) and a smaller upward shift in slope (DSRIP.time_ma) than in the interim report model. The initial upward level shift is largely an artifact of the data problem beginning in Dec 2015, discussed above.
+
+A plot of the autocorrelation function shows no significant autocorrelation, which is a result of adding the autoregressive term to the model.
+
+```{r mod2, echo=FALSE, message=FALSE, warning=FALSE}
+# first do the standard correction for moving average outcome variable
+
+xvars <- as.matrix(amr_sw2[, c("time_ma", "DSRIP_ma", "DSRIP.time_ma")])
+mod2 <- arima(amr_sw2$amrres, xreg=xvars, order=c(1,0,0)) # 
+summary(mod2)
+Acf(residuals(mod2)) # no significant autocorrelation
+
+```
+
+
+## Model 3: Preferred model: standard ITS moving-average model plus dummy variable for data shift
+```{r mod3, echo=FALSE, message=FALSE, warning=FALSE}
+# first do the standard correction for moving average outcome variable
+
+xvars2 <- as.matrix(amr_sw2[, c("time_ma", "DSRIP_ma", "DSRIP.time_ma", "data_shift")])
+mod3 <- arima(amr_sw2$amrres, xreg=xvars2, order=c(1,0,0)) # 
+summary(mod3)
+# Acf(residuals(mod3)) # moderate autocorrelation at lag 6
+# Pacf(residuals(mod3)) # suggests possible AR term at lag 6
+# summary(auto.arima(amr_sw2$amrres, xreg=xvars2)) # auto.arima chooses 1, 0, 0
+# summary(arima(amr_sw2$amrres, xreg=xvars2, order=c(6,0,0))) # blows up
+# so stick with the AR1 model
+
+```
+
+## Compare DSRIP effects across models
+This table shows the month-by-month DSRIP effects under the 3 models:
+
+* Model 1: Interim report model presented with time=1 at DSRIP start
+* Model 2: Standard ITS moving-average model: Moving averages of righthand side variables plus an autoregressive term
+* Model 3: Preferred model: standard ITS moving-average model plus dummy variable for data shift
+
+```{r compare, echo=FALSE, message=FALSE, warning=FALSE, fig.height=8, fig.width=10}
+
+effects <- tibble(time=1:24) %>%
+  mutate(emod1=coef(mod1)["DSRIP"] + coef(mod1)["I(DSRIP * time)"] * time,
+         emod2=coef(mod2)["DSRIP_ma"] + coef(mod2)["DSRIP.time_ma"] * time,
+         emod3=coef(mod3)["DSRIP_ma"] + coef(mod3)["DSRIP.time_ma"] * time)
+effects
+
+# labs <- c("Model 1: Interim report (with time=1 at DSRIP start)",
+#           "Model 2: Model 1 with moving averages on righthand side, plus autocorrelation correction",
+#           "Model 3: Model 2 with dummy variable for data anomaly (preferred model)")
+
+labs <- c("Model 1: Interim report model presented with time=1 at DSRIP start",
+          "Model 2: Standard ITS moving-average model: Moving averages of righthand side variables plus an autoregressive term",
+          "Model 3: Preferred model: standard ITS moving-average model plus dummy variable for data shift")
+
+effects %>%
+  gather(variable, value, -time) %>%
+  mutate(variable=factor(variable, 
+                         levels=c("emod1", "emod2", "emod3"),
+                         labels=str_wrap(labs, 20))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point()  +
+  geom_hline(yintercept = 0) +
+  scale_y_continuous(name="Impact on asthma medication ratio", limits=c(0, NA)) +
+  scale_x_continuous(name="Number of months into DSRIP", breaks=seq(0, 36, 3)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Estimated impact of DSRIP on asthma medication ratio\nunder different modeling approaches")
+
+```
+
+
+# Conclusions and lessons
+We have a few conclusions and lessons about the asthma medication ratio:
+
+* There is a large unexplained data shift beginning in Dec 2015 that affected the statewide total profoundly, and some PPS's. It does not look like it could be a change in methodology for the underlying data (before applying the 12-month moving average) because if that were the case it would show gradually in the moving-average data rather than showing as a large break. Thus, it appears to be a change applied *after* the moving average. It is hard to understand why this would be done.
+* We should get an explanation from DOH for what happened here.
+* The shift in the data, which occurs partway through DSRIP period, leads naive models to overestimate the impact of DSRIP greatly.
+* Ideally we would correct the underlying data. If we cannot do that, we should have a dummy variable in the model as in the preferred model above.
+
+More generally:
+
+* This exercise shows the importance of doing detective work on all important variables before and as we do statistical analysis.
+* We can automate and standardize much of this work, so it does not have to be terribly burdensome.
+* We should identify anomalies as early as we can and ask DOH for explanations.
+* We also should ask DOH to affirmatively tell us about any other anomalies they are aware of (whether we find them or not).
+
+
+
+
+
+
