@@ -1,0 +1,422 @@
+---
+title: 'Boyd ITS analysis'
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook: 
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+editor_options: 
+  chunk_output_type: console
+---
+
+<!-- setup chunk -->
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r system_specific_values, include=FALSE}
+# ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/CMA Files/chris_workflow/data/"
+ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/CMA Files/dsrip/chris_workflow/data/"
+
+```
+
+
+```{r globals, include=FALSE}
+m_long <- "V_mapp_pps_msr_mo_long.csv"
+a_long <- "v_mapp_pps_msr_ann_long.csv"
+
+ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
+
+dsrip_start <- as.Date("2015-07-01")
+
+```
+
+
+
+```{r libraries, include=FALSE}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("zoo") # for rollapply
+
+library("forecast") # for auto.arima
+
+```
+
+
+```{r functions, include=FALSE}
+ns <- function(df) {names(df) %>% sort}
+
+ma <- function(x, period) {
+  # create trailing moving average of x of length period
+  zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
+}
+
+se <- function(model) {sqrt(diag(vcov(model)))}
+
+```
+
+
+# ONETIME data prep
+```{r ONETIME_GetAndSaveData}
+# just in case the data change or disappear, get them and save them locally
+# read EVERYTHING as character just in case there are odd things that need to be fixed
+ppsm <- read_csv(paste0(ddir, m_long), col_types = cols(.default= col_character()))
+ppsa <- read_csv(paste0(ddir, a_long), col_types = cols(.default= col_character()))
+ppsnet <- read_csv(paste0(ddir, ppsnet_long), col_types = cols(.default= col_character()))
+
+save(ppsm, ppsa, ppsnet, file=here::here("data", "ignore", "dsripdata.rdata"))
+
+```
+
+
+## Extract metadata from Chris's project-level data
+```{r CAUTION_ONETIME_metadata}
+
+# CAUTION!! The data I used previously has disappeared! Do not overwrite it. I have commented out the saveRDS command.
+
+# Chris's monthly project-level data appears to have a few variables of value:
+#  - UNIT_LBL tells us how to calculate a measure from numerator and denominator
+#  - MSR_AS_OF_DT probably tells us the vintage of the data that were used in calculating a measure
+chris_m <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
+glimpse(chris_m)
+count(chris_m, UNIT_LBL)
+count(chris_m, MSR_AS_OF_DT)
+count(chris_m, PRCS_DT) # what is PRCS_DT??
+
+#.. is UNIT_LBL unique for each measure (we hope)? ----
+UNIT_LBL <- chris_m %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL) %>%
+  summarise(nobs=n()) %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  mutate(nlabels=n()) %>%
+  ungroup
+UNIT_LBL %>%   filter(nlabels > 1)
+# good, all measures have only 1 UNIT_LBL
+count(UNIT_LBL, UNIT_LBL)
+#   UNIT_LBL                n
+#   <chr>               <int>
+# 1 Per 1,000 Newborns      1
+# 2 Per 100 Members         2
+# 3 Per 100,000 Members    29
+# 4 Percentage             35
+# saveRDS(UNIT_LBL, here::here("data", "ignore", "UNIT_LBL.rds"))
+
+#.. get the measure names and save ----
+
+
+#.. look at MSR_AS_OF_DT ----
+# do as_of dates change within a measure-pps-project?
+mdates <- chris_m %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, DSRIP_PROJ_ID, DSRIP_PROJ_TITLE, PPS_ID, PPS_NAME) %>%
+  summarise(ndates=length(unique(MSR_AS_OF_DT)))
+
+tmp <- mdates[1, ] %>% 
+  select(-ndates) %>%
+  left_join(chris_m)
+# yes, the MSR_AS_OF_DT can change within a measure, project, pps, over time -- it looks like they must
+# calculate a measure and then keep it for later dates
+
+```
+
+
+## take a look at the data and do some light cleaning
+```{r ONETIME_look}
+load(here::here("data", "ignore", "dsripdata.rdata"))
+ppsm
+# which pps's do we have?
+count(ppsm, PPS_ID, PPS_NAME)
+# looks like we should drop 51 DOH Demonstration PPS
+# 2019-12-28 no longer has pps 51
+
+count(ppsm, PER_END_DT)
+
+# do some light data cleaning on monthly data ----
+ppsm2 <- ppsm %>%
+  mutate(PPS_ID=as.integer(PPS_ID),
+         PER_END_DT=as.Date(str_sub(PER_END_DT, 1, 10))) %>% # 2014-06-30 has time included, don't parse that
+  mutate_at(vars(MSR_NUM, MSR_DEN, MSR_RESULT, PERFRM_GOAL), ~as.numeric(.))
+summary(ppsm2)
+
+# look at some missing values
+ppsm2 %>% filter(is.na(MSR_NUM))
+# are they really missing? look at the character data
+missids <- ppsm2 %>% filter(is.na(MSR_NUM)) %>% .[["X1"]]
+ppsm %>% filter(X1 %in% missids) # yes, missing in the character data, also; I guess we have to accept it for now
+
+
+# compare to what Chris created to see if there are differences
+tmp <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
+glimpse(ppsm2); glimpse(tmp)
+count(tmp, PER_END_DT)
+setdiff(names(tmp), names(ppsm)) 
+# no longer different
+# are the missing values in ppsm also missing in Chris's data? pick one
+tmp %>% filter(PPS_ID==9, PER_END_DT=="2017-03-31", MSR_RESULT_ID=="FPCRES") # yes, missing there, too
+# tentative conclusion for now - use the long csv data
+
+
+# quick check: is MSR_RESULT approx equal to NUM / DEN scaled?
+ulabs <- readRDS(here::here("data", "ignore", "UNIT_LBL.rds")) # get the labels so we know how to calculate each measure
+count(ulabs, UNIT_LBL)
+measure_check <- ppsm2 %>%
+  left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
+  mutate(denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
+                         UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
+                         UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
+                         UNIT_LBL == "Percentage" ~ MSR_DEN / 100,
+                         # attend to measures for which we don't have UNIT_LBL, based on data-checking by hand
+                         MSR_RESULT_ID %in% c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES",
+                                              "LSRAPRES", "LSRDSRES", "PAINCRES") ~ MSR_DEN / 100,
+                         TRUE ~ 9e-99),
+         msr_calc=MSR_NUM / denom,
+         diff=msr_calc - MSR_RESULT) %>%
+  filter(diff!=0)
+quantile(measure_check$diff, na.rm=TRUE) # good, they match almost perfectly
+
+
+```
+
+
+## create monthly file with statewide records, as pps 99
+```{r ONETIME_add_statewide}
+count(ppsm2, PPS_ID)
+
+state <- ppsm2 %>%
+  group_by(MSR_RESULT_ID, PER_END_DT) %>% 
+  summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
+  mutate(PPS_ID=99, PPS_NAME="Statewide")
+
+# add the state total and calc measures
+pct_msr <- c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES", "LSRAPRES", "LSRDSRES", "PAINCRES")
+ppsall <- bind_rows(ppsm2, state) %>%
+  left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
+  mutate(UNIT_LBL=ifelse(MSR_RESULT_ID %in% pct_msr, "Percentage", UNIT_LBL),
+         denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
+                         UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
+                         UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
+                         UNIT_LBL == "Percentage" ~ MSR_DEN / 100,
+                         TRUE ~ 9e-99),
+         msr_calc=MSR_NUM / denom,
+         MSR_RESULT=ifelse(PPS_ID==99, msr_calc, MSR_RESULT),
+         idname=paste0(str_pad(PPS_ID, 2, pad="0"), ": ", PPS_NAME) %>% str_wrap(25)) %>% # zero-pad for better sorting
+  arrange(MSR_RESULT_ID, PPS_ID, PER_END_DT)
+# tmp <- ppsall %>% filter(abs(MSR_RESULT - msr_calc) > 0.1) # good, no errors
+glimpse(ppsall)
+saveRDS(ppsall, here::here("data", "ignore", "ppsall.rds"))
+
+```
+
+
+# Start of analysis -- with combined PPS/Statewide data
+```{r getdata}
+ppsall <- readRDS(here::here("data", "ignore", "ppsall.rds"))
+ulabs <- readRDS(here::here("data", "ignore", "UNIT_LBL.rds")) # get the labels so we know how to calculate each measure
+ulabs
+
+```
+
+
+```{r}
+# create moving average of time, dsrip, and joint variables
+# create a sequence of month end dates is first of each month minus 1 day
+(end_dates <- seq(as.Date("2013-02-01"), length=96, by="1 month") - 1) # Jan 2013 - Dec 2020
+ym <- function(date){paste(year(date), month(date))}
+
+timedf <- tibble(PER_END_DT=end_dates) %>%
+  mutate(rownum=row_number(),
+         time = rownum - rownum[which(ym(PER_END_DT) == ym(dsrip_start))] + 1,
+         dsrip=ifelse(PER_END_DT >= dsrip_start, 1, 0),
+         joint=time * dsrip,
+         time_ma=ma(time, 12),
+         dsrip_ma=ma(dsrip, 12),
+         joint_ma=ma(joint, 12)) %>%
+  # filter(!is.na(time_ma)) %>%
+  filter(PER_END_DT >= "2014-06-30")
+
+timedf
+
+```
+
+
+# test out ITS regression, different methods
+```{r its}
+# create data for one measure
+padrows <- function(df){
+  # add 11 months at the start so that we can calc moving averages - we'll later delete
+  start <- min(df$PER_END_DT)
+  # start <- as.Date("2014-06-30")
+  # get a sequence of months -- get first day of each month, and then subract a day to get last day of prior month
+  first_day <- seq(start + days(1), length=12, by="-1 month") %>% rev # get the first day of each month
+  last_day <- first_day - days(1)
+  month_seq <- last_day[-length(last_day)] # we don't need the last one
+  padding <- tibble(PER_END_DT=month_seq, PPS_ID=df$PPS_ID[1], MSR_RESULT_ID=df$MSR_RESULT_ID[1])
+  df2 <- bind_rows(padding, df)
+  return(df2)
+}
+padrows(df)
+
+msrid <- "PPRRES"
+msrid <- "AMRRES"
+ppsnum <- 27
+ppsnum <- 99
+
+df <- ppsall %>%
+  select(-X1, -denom, -msr_calc) %>%
+  # for now, filter - remove later
+  filter(MSR_RESULT_ID==msrid) %>%
+  filter(PPS_ID==ppsnum) %>%
+  # end of filtering
+  arrange(PPS_ID, MSR_RESULT_ID, PER_END_DT) %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  do(padrows(.)) %>%
+  mutate(dsrip=ifelse(PER_END_DT >= dsrip_start, 1, 0),
+         yearmo=year(PER_END_DT)*12 + month(PER_END_DT),
+         time=yearmo - year(dsrip_start) * 12 - month(dsrip_start) + 1, # time should be 1 in first dsrip month
+         dsrip_ma=ma(dsrip, 12),
+         time_ma=ma(time, 12),
+         joint=time * dsrip,
+         joint_ma=ma(time * dsrip, 12)) %>%
+  filter(!is.na(dsrip_ma)) %>%
+  ungroup %>%
+  mutate(rownum=row_number())
+# verify that time starts at 1 when dsrip is 1
+
+df <- ppsall %>%
+  select(-X1, -denom, -msr_calc) %>%
+  filter(MSR_RESULT_ID==msrid) %>%
+  filter(PPS_ID==ppsnum) %>%
+  left_join(timedf, by = "PER_END_DT")
+
+
+df %>%
+  select(PER_END_DT, time, time_ma, dsrip, dsrip_ma, joint, joint_ma)
+
+df %>%
+  select(time, time_ma, MSR_RESULT) %>%
+  mutate(x=time_ma) %>%
+  ggplot(aes(x, MSR_RESULT)) + geom_line() + geom_point() + geom_vline(xintercept = 0) + scale_x_continuous(breaks=seq(-24, 48, 2))
+
+
+xvars <- as.matrix(df[, c("time", "dsrip", "joint")])
+xvars_ma <- as.matrix(df[, c("time_ma", "dsrip_ma", "joint_ma")])
+
+
+# build from simple lm model to the model above
+# lm model, dsrip impact big and signif
+lm1 <- lm(MSR_RESULT ~ time + dsrip + joint, data=df)
+summary(lm1)
+# Coefficients:
+#             Estimate Std. Error t value Pr(>|t|)    
+# (Intercept)  647.174     10.881  59.479  < 2e-16 ***
+# time          -2.167      1.539  -1.408    0.165    
+# dsrip        -53.790     12.607  -4.267 8.22e-05 ***
+# joint          1.452      1.558   0.932    0.356 
+
+
+# same model using arima call, same results, dsrip impact big and signif
+mod1 <- arima(df$MSR_RESULT, xreg=xvars, order=c(0, 0, 0)) 
+summary(mod1)
+# Coefficients:
+#       intercept     time     dsrip   joint
+#        647.1744  -2.1667  -53.7900  1.4524
+# s.e.    10.4920   1.4838   12.1565  1.5027
+
+# add ar1, dsrip smaller and not signif
+mod1 <- arima(df$MSR_RESULT, xreg=xvars, order=c(1, 0, 0)) 
+summary(mod1)
+#          ar1  intercept     time     dsrip   joint
+#       0.7649   628.1793  -4.0510  -23.1627  2.9181
+# s.e.  0.0866    16.2951   2.1741   14.3668  2.4234
+
+
+# ar1 with ma variables, dsrip impact bigger but not signif
+mod1 <- arima(df$MSR_RESULT, xreg=xvars_ma, order=c(1, 0, 0))
+summary(mod1)
+# Coefficients:
+#          ar1  intercept  time_ma  dsrip_ma  joint_ma
+#       0.6810   620.1582  -3.3444  -50.8206    3.3376
+# s.e.  0.0953    20.7246   1.7342   27.4244    1.7452
+
+# auto.arima of proper data ar1, ar2 large prob not significant
+mod1 <- auto.arima(df$MSR_RESULT, xreg=xvars_ma)
+summary(mod1)
+# Coefficients:
+#          ar1      ar2  intercept  time_ma  dsrip_ma  joint_ma
+#       0.8379  -0.2338   620.4940  -3.3059  -52.6447    3.4013
+# s.e.  0.1272   0.1295    18.2177   1.5831   24.2835    1.5628
+
+# proper model ma11, neg but not signif
+mod1 <- arima(df$MSR_RESULT, xreg=xvars_ma, order=c(0, 0, 11), fixed = c(rep(1, 11), NA, NA, NA, NA ))
+summary(mod1)
+# Coefficients:
+#       intercept  time_ma  dsrip_ma  joint_ma
+#       592.4594  -6.4147  -32.1812    7.0997
+# s.e.  77.9107   5.8765   98.9464    6.2526
+
+
+Acf(residuals(mod1))
+Pacf(residuals(mod1))
+
+
+```
+
+
+## explore
+```{r}
+msrid <- "SMCRES"
+msrid <- "SAARES"
+msrid <- "PPRRES"
+
+(msrtitle <- paste0(msrid, ": ", ulabs$MSR_RESULT_NAME[ulabs$MSR_RESULT_ID==msrid]))
+(msrcalc <- ulabs$UNIT_LBL[ulabs$MSR_RESULT_ID==msrid])
+p <- ppsall %>%
+  filter(MSR_RESULT_ID==msrid) %>%
+  ggplot(aes(PER_END_DT, MSR_RESULT)) +
+  geom_line(colour="darkgreen") +
+  geom_point(colour="darkgreen") +
+  geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+  facet_wrap(~idname, scales = "free", ncol=6) +
+  ggtitle(paste0(msrtitle, "\n", paste0("Calculation: ", msrcalc)),
+          subtitle="Notes: (1) Vertical line marks DSRIP start, (2) Data are from Chris dropbox files")
+p
+ggsave(here::here("results", paste0(msrid, "_facet.png")), plot=p, width=10, height=8, scale=2)
+  
+# produce a bunch of plots
+# measure_facet_plots
+f <- function(msrid){
+  # CAUTION: this function assumes ulabs and ppsall data frames exist
+  msrtitle <- paste0(msrid, ": ", ulabs$MSR_RESULT_NAME[ulabs$MSR_RESULT_ID==msrid])
+  msrcalc <- ulabs$UNIT_LBL[ulabs$MSR_RESULT_ID==msrid]
+  p <- ppsall %>%
+    filter(MSR_RESULT_ID==msrid) %>%
+    ggplot(aes(PER_END_DT, MSR_RESULT)) +
+    geom_line(colour="darkgreen") +
+    geom_point(colour="darkgreen") +
+    geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+    facet_wrap(~idname, scales = "free", ncol=6) +
+    ggtitle(paste0(msrtitle, "\n", paste0("Calculation: ", msrcalc)),
+          subtitle="Notes: (1) Vertical line marks DSRIP start, (2) Data are from Chris dropbox files")
+  ggsave(here::here("results", "measure_facet_plots", paste0(msrid, "_facet.png")), plot=p, width=10, height=8, scale=2)
+  return(NULL)
+}
+
+l_ply(ulabs$MSR_RESULT_ID, f, .progress = "text")
+
+```
+
+

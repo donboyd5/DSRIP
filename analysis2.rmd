@@ -28,7 +28,7 @@ a_long <- "v_mapp_pps_msr_ann_long.csv"
 
 ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
 
-dsrip_start <- as.Date("2015-07-1")
+dsrip_start <- as.Date("2015-07-01")
 
 ```
 
@@ -110,6 +110,9 @@ count(UNIT_LBL, UNIT_LBL)
 # 3 Per 100,000 Members    29
 # 4 Percentage             35
 saveRDS(UNIT_LBL, here::here("data", "ignore", "UNIT_LBL.rds"))
+
+#.. get the measure names and save ----
+
 
 #.. look at MSR_AS_OF_DT ----
 # do as_of dates change within a measure-pps-project?
@@ -197,14 +200,16 @@ quantile(measure_check$diff, na.rm=TRUE) # good, they match almost perfectly
 
 ## create monthly file with statewide records, as pps 99
 ```{r add_statewide}
-state <- ppsm2 %>%
+ppsm3 <- ppsm2 %>% filter(PPS_ID!=51)
+
+state <- ppsm3 %>%
   group_by(MSR_RESULT_ID, PER_END_DT) %>% 
   summarise_at(vars(MSR_NUM, MSR_DEN), ~sum(., na.rm=TRUE)) %>%
   mutate(PPS_ID=99, PPS_NAME="Statewide")
 
 # add the state total and calc measures
 pct_msr <- c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES", "LSRAPRES", "LSRDSRES", "PAINCRES")
-ppsall <- bind_rows(ppsm2, state) %>%
+ppsall <- bind_rows(ppsm3, state) %>%
   left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
   mutate(UNIT_LBL=ifelse(MSR_RESULT_ID %in% pct_msr, "Percentage", UNIT_LBL),
          denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
@@ -224,19 +229,168 @@ saveRDS(ppsall, here::here("data", "ignore", "ppsall.rds"))
 ```
 
 
-# More exploration
+# More exploration, with combined PPS/Statewide data
 ```{r}
 ppsall <- readRDS(here::here("data", "ignore", "ppsall.rds"))
 
+ulabs
 
+msrid <- "SMCRES"
+msrid <- "SAARES"
+msrid <- "PPRRES"
+
+
+(msrtitle <- paste0(msrid, ": ", ulabs$MSR_RESULT_NAME[ulabs$MSR_RESULT_ID==msrid]))
+(msrcalc <- ulabs$UNIT_LBL[ulabs$MSR_RESULT_ID==msrid])
+p <- ppsall %>%
+  filter(MSR_RESULT_ID==msrid) %>%
+  ggplot(aes(PER_END_DT, MSR_RESULT)) +
+  geom_line(colour="darkgreen") +
+  geom_point(colour="darkgreen") +
+  geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+  facet_wrap(~idname, scales = "free", ncol=6) +
+  ggtitle(paste0(msrtitle, "\n", paste0("Calculation: ", msrcalc)),
+          subtitle="Notes: (1) Vertical line marks DSRIP start, (2) Data are from Chris dropbox files")
+p
+ggsave(here::here("results", paste0(msrid, "_facet.png")), plot=p, width=10, height=8, scale=2)
+  
+# produce a bunch of plots
+# measure_facet_plots
+f <- function(msrid){
+  # CAUTION: this function assumes ulabs and ppsall data frames exist
+  msrtitle <- paste0(msrid, ": ", ulabs$MSR_RESULT_NAME[ulabs$MSR_RESULT_ID==msrid])
+  msrcalc <- ulabs$UNIT_LBL[ulabs$MSR_RESULT_ID==msrid]
+  p <- ppsall %>%
+    filter(MSR_RESULT_ID==msrid) %>%
+    ggplot(aes(PER_END_DT, MSR_RESULT)) +
+    geom_line(colour="darkgreen") +
+    geom_point(colour="darkgreen") +
+    geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+    facet_wrap(~idname, scales = "free", ncol=6) +
+    ggtitle(paste0(msrtitle, "\n", paste0("Calculation: ", msrcalc)),
+          subtitle="Notes: (1) Vertical line marks DSRIP start, (2) Data are from Chris dropbox files")
+  ggsave(here::here("results", "measure_facet_plots", paste0(msrid, "_facet.png")), plot=p, width=10, height=8, scale=2)
+  return(NULL)
+}
+
+l_ply(ulabs$MSR_RESULT_ID, f, .progress = "text")
+
+```
+
+
+# do an ITS regression
+```{r its}
+# create data for one measure
+padrows <- function(df){
+  # add 11 months at the start so that we can calc moving averages - we'll later delete
+  start <- min(df$PER_END_DT)
+  # start <- as.Date("2014-06-30")
+  # get a sequence of months -- get first day of each month, and then subract a day to get last day of prior month
+  first_day <- seq(start + days(1), length=12, by="-1 month") %>% rev # get the first day of each month
+  last_day <- first_day - days(1)
+  month_seq <- last_day[-length(last_day)] # we don't need the last one
+  padding <- tibble(PER_END_DT=month_seq, PPS_ID=df$PPS_ID[1], MSR_RESULT_ID=df$MSR_RESULT_ID[1])
+  df2 <- bind_rows(padding, df)
+  return(df2)
+}
+padrows(df)
+
+msrid <- "PPRRES"
+msrid <- "AMRRES"
+ppsnum <- 27
+ppsnum <- 99
+
+df <- ppsall %>%
+  select(-X1, -denom, -msr_calc) %>%
+  # for now, filter - remove later
+  filter(MSR_RESULT_ID==msrid) %>%
+  filter(PPS_ID==ppsnum) %>%
+  # end of filtering
+  arrange(PPS_ID, MSR_RESULT_ID, PER_END_DT) %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  do(padrows(.)) %>%
+  mutate(dsrip=ifelse(PER_END_DT >= dsrip_start, 1, 0),
+         yearmo=year(PER_END_DT)*12 + month(PER_END_DT),
+         time=yearmo - year(dsrip_start) * 12 - month(dsrip_start) + 1, # time should be 1 in first dsrip month
+         dsrip_ma=ma(dsrip, 12),
+         time_ma=ma(time, 12),
+         joint=time * dsrip,
+         joint_ma=ma(time * dsrip, 12)) %>%
+  filter(!is.na(dsrip_ma)) %>%
+  ungroup %>%
+  mutate(rownum=row_number(),
+         shift=ifelse(MSR_RESULT_ID=="AMRRES" & time>=6, 1, 0))
+# verify that time starts at 1 when dsrip is 1
+
+xvars <- as.matrix(df[, c("time_ma", "dsrip_ma", "joint_ma")])
+xvars2 <- as.matrix(df[, c("time_ma", "dsrip_ma", "joint_ma", "shift")])
+
+mod <- arima(df$MSR_RESULT, xreg=xvars, order=c(0, 0, 11), fixed = c(rep(1, 11), NA, NA, NA, NA ))
+summary(mod)
+
+mod0b <- arima(df$MSR_RESULT, xreg=xvars2, order=c(0, 0, 11), fixed = c(rep(1, 11), NA, NA, NA, NA, NA))
+summary(mod0b) # the shift is what matters
+Acf(residuals(mod0b))
+Pacf(residuals(mod0b))
+
+mod0c <- auto.arima(df$MSR_RESULT, xreg=xvars2)
+summary(mod0c) # dsrip matters
+
+xvars3 <- as.matrix(df[, c("time", "dsrip", "joint", "shift")])
+mod0d <- auto.arima(df$MSR_RESULT, xreg=xvars3)
+summary(mod0d) # dsrip matters
+
+# this matches my previous look at this, so the data are the same
+# mod0a <- arima(df$MSR_RESULT[1:37], xreg=xvars[1:37, ], order=c(1, 0, 0))
+# summary(mod0a)
+
+mod1 <- auto.arima(df$MSR_RESULT, xreg=xvars)
+summary(mod1)
+
+xvars <- as.matrix(amr_sw2[, c("time_ma", "DSRIP_ma", "DSRIP.time_ma")])
+mod2 <- arima(amr_sw2$amrres, xreg=xvars, order=c(1,0,0)) # 
+
+mod2 <- lm(MSR_RESULT ~ time + dsrip + joint, data=df)
+summary(mod2)
+
+mod3 <- lm(MSR_RESULT ~ rownum + dsrip + I(rownum * dsrip), data=df)
+summary(mod3)
+
+# when run with AMRRES and ppsid 99 this should be pretty close to the interim report -- p.152
+mod3a <- lm(MSR_RESULT ~ rownum + dsrip + I(rownum * dsrip), data=df %>% filter(rownum <= 37))
+summary(mod3a)
+
+df %>% 
+  mutate(x=time) %>%
+  ggplot(aes(x, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = 0) +
+  scale_x_continuous(breaks=seq(-30, 60, 3))
+
+
+Acf(residuals(mod))
+Pacf(residuals(mod))
+
+Acf(residuals(mod1))
+Pacf(residuals(mod1))
+
+Acf(residuals(mod2))
+Pacf(residuals(mod2))
+
+Acf(residuals(mod3))
+Pacf(residuals(mod3))
 
 
 ```
 
 
 
-# PPRRES exploration
-## Data  prep
+
+
+
+# OLDER ANALYSIS IS BELOW HERE ----
+## Data  prep for PPRRES exploration
 ```{r PPRRES_data}
 
 # does PPRRES potentially avoidable readmissions look ok??

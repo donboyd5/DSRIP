@@ -1,0 +1,316 @@
+---
+title: "Vizualizations 12.20.2019"
+author: "Phil Gigliotti"
+date: "December 20, 2019"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+First, I wondered if the changes in the 3 main measures (PPRRES, PPVRES and PPVBHRES) were being driven by differences in size, population growth, baseline totals for the measures or growth in the measures. I remade the plots of the change in the measure from 2014 to 2018, this time as a scatterplot against population in 2018, change in population from 2014 to 2018, total count of the measure in 2018 and change in the measure from 2014 to 2018. I weight all the points with larger bubbles by population in 2018. First I made the plots for PPRRES. Since most PPS improved these do not show many clear relationships, though PPS experiencing growth in PPRRES were obviously more likely not to improve. 
+
+```{r}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+```
+
+
+```{r, echo = FALSE}
+###call packages
+
+# suppressMessages(library(dplyr))
+# suppressMessages(library(ggplot2))
+
+###make connection
+
+
+# view = readRDS("C:\\Users\\Phil Gigliotti\\Dropbox\\DSRIP TSA_CA Team Info\\Phil's files\\shiny\\V_mapp_pps_msr_ann_wide.rds")
+dbox <- "C:/Users/donbo/Dropbox/"
+view <- readRDS(paste0(dbox, "DSRIP TSA_CA Team Info/Phil's files/shiny/V_mapp_pps_msr_ann_wide.rds"))
+glimpse(view)
+
+###create dataset with change in PPRRES from base year and medicaid population in 2018
+
+pprres <- view %>% select(PER_END_DT, PPRRES_MSR_RESULT, PPRRES_MSR_DEN, PPRRES_MSR_NUM, PPS_ID, PPS_NAME)
+
+pprres <- pprres %>%
+  group_by(PPS_ID) %>%
+  mutate(change2018PPRRES = ifelse(PER_END_DT == "2014-06-30 00:00:00",
+                                   PPRRES_MSR_RESULT- PPRRES_MSR_RESULT[PER_END_DT == "2018-06-30 00:00:00"],
+                                   0))
+
+pprres <- pprres %>% arrange(PER_END_DT)
+
+pprres <- pprres %>%
+  group_by(PPS_ID) %>% 
+  mutate(pop2018 = ifelse(PER_END_DT == "2014-06-30 00:00:00",
+                          PPRRES_MSR_DEN[PER_END_DT == "2018-06-30 00:00:00"], ""))
+
+pprres <- pprres %>%
+  group_by(PPS_ID) %>%
+  mutate(tot2018 = ifelse(PER_END_DT == "2014-06-30 00:00:00",
+                          PPRRES_MSR_NUM[PER_END_DT == "2018-06-30 00:00:00"],
+                          ""))
+
+
+PPRRESchangepop = pprres %>% filter(PER_END_DT == "2014-06-30 00:00:00")
+
+
+PPRRESchangepop$change2018PPRRES = as.numeric(PPRRESchangepop$change2018PPRRES)
+PPRRESchangepop$pop2018 = as.numeric(PPRRESchangepop$pop2018)
+PPRRESchangepop$tot2018 = as.numeric(PPRRESchangepop$tot2018)
+
+PPRRESchangepop <- PPRRESchangepop %>%
+  mutate(ChangePop = pop2018 - PPRRES_MSR_DEN, Changetot = tot2018-PPRRES_MSR_NUM)
+
+###Create plot
+
+PPRRESchangepop %>% 
+  ggplot(aes(x= pop2018, y = change2018PPRRES)) + 
+  geom_point(aes(size = pop2018)) + 
+  ggtitle("Phil Change in PPRRES from 2014 to 2018 by 2018 population, weighted by population") + 
+  xlab("Population 2018") +
+  ylab("Change in PPRRES")+geom_smooth(method="lm")
+
+# PPRRESchangepop%>%ggplot(aes(x= ChangePop, y = change2018PPRRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPRRES from 2014 to 2018 by change in population from 2014 to 2018, weighted by population") + xlab("Change in Population") +ylab("Change in PPRRES")+geom_smooth(method="lm")
+# PPRRESchangepop%>%ggplot(aes(x= tot2018, y = change2018PPRRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPRRES from 2014 to 2018 by 2018 Total PPRRES, weighted by population") + xlab("Total PPRRES 2018") +ylab("Change in PPRRES")+geom_smooth(method="lm")
+# PPRRESchangepop%>%ggplot(aes(x= Changetot, y = change2018PPRRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPRRES from 2014 to 2018 by change in total PPRRES from 2014 to 2018, weighted by population") + xlab("Change in PPRRES") +ylab("Change in PPRRES")+geom_smooth(method="lm")
+
+
+
+meas <- "PPVRES"
+(mnames <- paste0(meas, c("_MSR_RESULT", "_MSR_DEN", "_MSR_NUM")))
+my2014 <- "2014-06-30 00:00:00"
+my2018 <- "2018-06-30 00:00:00"
+df <- view %>%
+  select(PER_END_DT, result=mnames[1], den=mnames[2], num=mnames[3], PPS_ID, PPS_NAME) %>%
+  filter(PER_END_DT %in% c(my2014, my2018), PPS_ID != 51) %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  mutate(pop2014=den[PER_END_DT==my2014],
+         pop2018=den[PER_END_DT==my2018],
+         meas2014=result[PER_END_DT==my2014],
+         meas2018=result[PER_END_DT==my2018],
+         pop_change=pop2018 - pop2014,
+         meas_change=meas2018 - meas2014) %>%
+  filter(PER_END_DT==my2018) %>%
+  select(-PER_END_DT, -starts_with(meas))
+
+df %>% 
+  ggplot(aes(x= pop2018, y = meas_change)) + 
+  geom_point(aes(size = pop2018)) + 
+  ggtitle(paste0("Alternative code:  Change in ", meas, " from 2014 to 2018 by 2018 population, weighted by population")) + 
+  xlab("Population 2018") +
+  ylab(paste0("Change in ", meas)) + 
+  geom_smooth(method="lm") +
+  geom_hline(yintercept = 0, colour="darkgreen")
+
+
+
+```
+
+Next I plot the same measures for PPVRES (Potentially Preventable Emergency Room Visits). These show a much different story. Here we see a clear struggle among larger PPS, both in terms of population and total ERV, to meet the goal, while small pps succeed. The changes are not related to change in population, but are related to change in ERV.
+```{r, echo = FALSE}
+###call packages
+
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+
+###make connection
+
+
+view = readRDS("C:\\Users\\Phil Gigliotti\\Dropbox\\DSRIP TSA_CA Team Info\\Phil's files\\shiny\\V_mapp_pps_msr_ann_wide.rds")
+
+
+###create dataset with change in PPVRES from base year and medicaid population in 2018
+
+PPVres <- view%>%select(PER_END_DT, PPVRES_MSR_RESULT, PPVRES_MSR_DEN, PPVRES_MSR_NUM, PPS_ID, PPS_NAME)
+
+PPVres <- PPVres%>%group_by(PPS_ID)%>%mutate(change2018PPVRES = ifelse(PER_END_DT == "2014-06-30 00:00:00", PPVRES_MSR_RESULT- PPVRES_MSR_RESULT[PER_END_DT == "2018-06-30 00:00:00"], 0))
+
+PPVres <- PPVres%>%arrange(PER_END_DT)
+
+PPVres <- PPVres%>%group_by(PPS_ID)%>%mutate(pop2018 = ifelse(PER_END_DT == "2014-06-30 00:00:00", PPVRES_MSR_DEN[PER_END_DT == "2018-06-30 00:00:00"], ""))
+
+PPVres <- PPVres%>%group_by(PPS_ID)%>%mutate(tot2018 = ifelse(PER_END_DT == "2014-06-30 00:00:00", PPVRES_MSR_NUM[PER_END_DT == "2018-06-30 00:00:00"], ""))
+
+
+PPVRESchangepop = PPVres%>%filter(PER_END_DT == "2014-06-30 00:00:00")
+
+
+PPVRESchangepop$change2018PPVRES = as.numeric(PPVRESchangepop$change2018PPVRES)
+PPVRESchangepop$pop2018 = as.numeric(PPVRESchangepop$pop2018)
+PPVRESchangepop$tot2018 = as.numeric(PPVRESchangepop$tot2018)
+
+PPVRESchangepop <- PPVRESchangepop%>%mutate(ChangePop = pop2018-PPVRES_MSR_DEN, Changetot = tot2018-PPVRES_MSR_NUM)
+
+###Create plot
+
+PPVRESchangepop%>%ggplot(aes(x= pop2018, y = change2018PPVRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVRES from 2014 to 2018 by 2018 population, weighted by population") + xlab("Population 2018") +ylab("Change in PPVRES")+geom_smooth(method="lm")
+PPVRESchangepop%>%ggplot(aes(x= ChangePop, y = change2018PPVRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVRES from 2014 to 2018 by change in population from 2014 to 2018, weighted by population") + xlab("Change in Population") +ylab("Change in PPVRES")+geom_smooth(method="lm")
+PPVRESchangepop%>%ggplot(aes(x= tot2018, y = change2018PPVRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVRES from 2014 to 2018 by 2018 Total PPVRES, weighted by population") + xlab("Total PPVRES 2018") +ylab("Change in PPVRES")+geom_smooth(method="lm")
+PPVRESchangepop%>%ggplot(aes(x= Changetot, y = change2018PPVRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVRES from 2014 to 2018 by change in total PPVRES from 2014 to 2018, weighted by population") + xlab("Change in PPVRES") +ylab("Change in PPVRES")+geom_smooth(method="lm")
+
+```
+
+The behavioral ERV measure (PPVBHRES) shows a similar trend to the overall ERV measure, though results may be driven by a weighty point that is both large and low performing. Change in PPVBHRES is negatively related to both total population and population growth. 
+```{r, echo = FALSE}
+###call packages
+
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+
+###make connection
+
+
+view = readRDS("C:\\Users\\Phil Gigliotti\\Dropbox\\DSRIP TSA_CA Team Info\\Phil's files\\shiny\\V_mapp_pps_msr_ann_wide.rds")
+
+
+###create dataset with change in PPVBHRES from base year and medicaid population in 2018
+
+PPVBHres <- view%>%select(PER_END_DT, PPVBHRES_MSR_RESULT, PPVBHRES_MSR_DEN, PPVBHRES_MSR_NUM, PPS_ID, PPS_NAME)
+
+PPVBHres <- PPVBHres%>%group_by(PPS_ID)%>%mutate(change2018PPVBHRES = ifelse(PER_END_DT == "2014-06-30 00:00:00", PPVBHRES_MSR_RESULT- PPVBHRES_MSR_RESULT[PER_END_DT == "2018-06-30 00:00:00"], 0))
+
+PPVBHres <- PPVBHres%>%arrange(PER_END_DT)
+
+PPVBHres <- PPVBHres%>%group_by(PPS_ID)%>%mutate(pop2018 = ifelse(PER_END_DT == "2014-06-30 00:00:00", PPVBHRES_MSR_DEN[PER_END_DT == "2018-06-30 00:00:00"], ""))
+
+PPVBHres <- PPVBHres%>%group_by(PPS_ID)%>%mutate(tot2018 = ifelse(PER_END_DT == "2014-06-30 00:00:00", PPVBHRES_MSR_NUM[PER_END_DT == "2018-06-30 00:00:00"], ""))
+
+
+PPVBHRESchangepop = PPVBHres%>%filter(PER_END_DT == "2014-06-30 00:00:00")
+
+
+PPVBHRESchangepop$change2018PPVBHRES = as.numeric(PPVBHRESchangepop$change2018PPVBHRES)
+PPVBHRESchangepop$pop2018 = as.numeric(PPVBHRESchangepop$pop2018)
+PPVBHRESchangepop$tot2018 = as.numeric(PPVBHRESchangepop$tot2018)
+
+PPVBHRESchangepop <- PPVBHRESchangepop%>%mutate(ChangePop = pop2018-PPVBHRES_MSR_DEN, Changetot = tot2018-PPVBHRES_MSR_NUM)
+
+###Create plot
+
+PPVBHRESchangepop%>%ggplot(aes(x= pop2018, y = change2018PPVBHRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVBHRES from 2014 to 2018 by 2018 population, weighted by population") + xlab("Population 2018") +ylab("Change in PPVBHRES")+geom_smooth(method="lm")
+PPVBHRESchangepop%>%ggplot(aes(x= ChangePop, y = change2018PPVBHRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVBHRES from 2014 to 2018 by change in population from 2014 to 2018, weighted by population") + xlab("Change in Population") +ylab("Change in PPVBHRES")+geom_smooth(method="lm")
+PPVBHRESchangepop%>%ggplot(aes(x= tot2018, y = change2018PPVBHRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVBHRES from 2014 to 2018 by 2018 Total PPVBHRES, weighted by population") + xlab("Total PPVBHRES 2018") +ylab("Change in PPVBHRES")+geom_smooth(method="lm")
+PPVBHRESchangepop%>%ggplot(aes(x= Changetot, y = change2018PPVBHRES))+geom_point(aes(size = pop2018))+ggtitle("Change in PPVBHRES from 2014 to 2018 by change in total PPVBHRES from 2014 to 2018, weighted by population") + xlab("Change in PPVBHRES") +ylab("Change in PPVBHRES")+geom_smooth(method="lm")
+
+```
+
+Next, I wanted to make line plots similar to last weeks that can show us the aggregate trend in both the 3 measures, and the total counts of PPR and ERV in the monthly measures. This time I plotted each individually, because the scales were not comprable when grouped together last week. See below.
+
+```{r, echo = FALSE}
+###call packages
+
+suppressMessages(library("dplyr"))
+suppressMessages(library("ggplot2"))
+suppressMessages(library("ggrepel"))
+
+###make connection
+
+view = readRDS("C:\\Users\\Phil Gigliotti\\Dropbox\\DSRIP TSA_CA Team Info\\Phil's files\\shiny\\V_mapp_pps_msr_mo_wide.rds")
+
+
+
+###create dataset with yearly averages/counts of 3 main measures
+mainmeas <- view%>%select(PER_END_DT, PPRRES_MSR_RESULT, PPRRES_MSR_DEN, PPRRES_MSR_NUM, PPVRES_MSR_DEN, PPVRES_MSR_NUM, PPVRES_MSR_RESULT, PPVBHRES_MSR_DEN, PPVBHRES_MSR_NUM, PPVBHRES_MSR_RESULT, PPS_NAME, PPS_ID)
+
+mainmeas$Year = format(as.Date(mainmeas$PER_END_DT), "%Y")
+
+
+mainmeas$Year = as.numeric(mainmeas$Year)
+
+lineplot <- mainmeas%>%group_by(PER_END_DT)%>%summarise(PPRRES = mean(PPRRES_MSR_RESULT, na.rm = TRUE), PPVRES = mean(PPVRES_MSR_RESULT, na.rm=TRUE), PPVBHRES = mean(PPVBHRES_MSR_RESULT, na.rm = TRUE), PPRREScount = sum(PPRRES_MSR_NUM, na.rm = TRUE), PPVREScount = sum(PPVRES_MSR_NUM, na.rm=TRUE), PPVBHREScount = sum(PPVBHRES_MSR_NUM, na.rm = TRUE))
+
+lineplot$PER_END_DT = as.Date(lineplot$PER_END_DT, "%Y-%m-%d")
+
+
+###Create plot
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPRRES)) + 
+  geom_line(aes(y = PPRRES)) +
+  ggtitle("Aggregate Monthly Trend in PPRRES Measure")
+  
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+  
+  geom_point(aes(y = PPVRES)) + 
+  geom_line(aes(y = PPVRES)) +
+  ggtitle("Aggregate Monthly Trend in PPVRES Measure")
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+  
+  geom_point(aes(y = PPVBHRES)) + 
+  geom_line(aes(y = PPVBHRES)) +
+  ggtitle("Aggregate Monthly Trend in PPVBHRES Measure")
+  
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPRREScount)) + 
+  geom_line(aes(y = PPRREScount)) +
+  ggtitle("Aggregate Monthly Trend in Total PPRRES")
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPVREScount)) + 
+  geom_line(aes(y = PPVREScount)) +
+  ggtitle("Aggregate Monthly Trend in Total PPVRES")
+
+  lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPVBHREScount)) + 
+  geom_line(aes(y = PPVBHREScount)) +
+  ggtitle("Aggregate Monthly Trend in Total PPVBHRES")
+  
+```
+
+I was somewhat concerned about the Behavioral Health Measure, which shows rapidly increasing total counts, but a quadratic trend in the actual measure. This could happen because the DSRIP program led to greater classification of patients as belonging to the behavioral health population due to its emphasis on behavioral health care. Below is a plot of the total behavioral health populations as well (PPVBHRES Denominator). This shows a doubling of the population. This makes interpretation of the ability of PPS to reduce behavioral health ERV somewhat complicated, as the population was unstable and rapidly growing over the period of the program. I also included plots of the other 2 measure denominators (Total Mediacid population). These measures are equivalent. They show that Total ERV tracked closely with the size of the medicaid population, but PPR decreased independent and despite of the growing medicaid population. 
+
+
+
+```{r, echo = FALSE}
+###call packages
+
+suppressMessages(library("dplyr"))
+suppressMessages(library("ggplot2"))
+suppressMessages(library("ggrepel"))
+
+###make connection
+
+view = readRDS("C:\\Users\\Phil Gigliotti\\Dropbox\\DSRIP TSA_CA Team Info\\Phil's files\\shiny\\V_mapp_pps_msr_mo_wide.rds")
+
+
+
+###create dataset with yearly averages/counts of 3 main measures
+mainmeas <- view%>%select(PER_END_DT, PPRRES_MSR_RESULT, PPRRES_MSR_DEN, PPRRES_MSR_NUM, PPVRES_MSR_DEN, PPVRES_MSR_NUM, PPVRES_MSR_RESULT, PPVBHRES_MSR_DEN, PPVBHRES_MSR_NUM, PPVBHRES_MSR_RESULT, PPS_NAME, PPS_ID)
+
+mainmeas$Year = format(as.Date(mainmeas$PER_END_DT), "%Y")
+
+
+mainmeas$Year = as.numeric(mainmeas$Year)
+
+lineplot <- mainmeas%>%group_by(PER_END_DT)%>%summarise(PPRRES = mean(PPRRES_MSR_RESULT, na.rm = TRUE), PPVRES = mean(PPVRES_MSR_RESULT, na.rm=TRUE), PPVBHRES = mean(PPVBHRES_MSR_RESULT, na.rm = TRUE), PPRREScount = sum(PPRRES_MSR_NUM, na.rm = TRUE), PPVREScount = sum(PPVRES_MSR_NUM, na.rm=TRUE), PPVBHREScount = sum(PPVBHRES_MSR_NUM, na.rm = TRUE), PPVBHRESpop = sum(PPVBHRES_MSR_DEN, na.rm=TRUE), PPVRESpop = sum(PPVRES_MSR_DEN, na.rm=TRUE), PPRRESpop = sum(PPRRES_MSR_DEN, na.rm=TRUE))
+
+lineplot$PER_END_DT = as.Date(lineplot$PER_END_DT, "%Y-%m-%d")
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPVBHRESpop)) + 
+  geom_line(aes(y = PPVBHRESpop)) +
+  ggtitle("Aggregate Monthly Trend in PPVBHRES Denominator (Behavioral Health Population)")
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPVRESpop)) + 
+  geom_line(aes(y = PPVRESpop)) +
+  ggtitle("Aggregate Monthly Trend in PPVRES Denominator (Total Medicaid Population)")
+
+lineplot%>%ggplot(aes(x=PER_END_DT, group = 1))+
+  geom_point(aes(y = PPRRESpop)) + 
+  geom_line(aes(y = PPRRESpop)) +
+  ggtitle("Aggregate Monthly Trend in PPRRES Denominator (Total Medicaid Population)")
