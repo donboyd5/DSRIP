@@ -51,9 +51,14 @@ library("grDevices")
 library("knitr")
 library("kableExtra")
 
+library("btools")
+
 library("zoo") # for rollapply
 
+library("broom")
 library("forecast") # for auto.arima
+library("lmtest")
+
 
 ```
 
@@ -255,53 +260,20 @@ timedf
 
 # test out ITS regression, different methods
 ```{r its}
-# create data for one measure
-padrows <- function(df){
-  # add 11 months at the start so that we can calc moving averages - we'll later delete
-  start <- min(df$PER_END_DT)
-  # start <- as.Date("2014-06-30")
-  # get a sequence of months -- get first day of each month, and then subract a day to get last day of prior month
-  first_day <- seq(start + days(1), length=12, by="-1 month") %>% rev # get the first day of each month
-  last_day <- first_day - days(1)
-  month_seq <- last_day[-length(last_day)] # we don't need the last one
-  padding <- tibble(PER_END_DT=month_seq, PPS_ID=df$PPS_ID[1], MSR_RESULT_ID=df$MSR_RESULT_ID[1])
-  df2 <- bind_rows(padding, df)
-  return(df2)
-}
-padrows(df)
+# verify that time starts at 1 when dsrip is 1
+df1 <- ppsall %>%
+  select(-X1, -denom, -msr_calc) %>%
+  left_join(timedf, by = "PER_END_DT")
+count(df, MSR_RESULT_ID)
 
 msrid <- "PPRRES"
 msrid <- "AMRRES"
 ppsnum <- 27
 ppsnum <- 99
 
-df <- ppsall %>%
-  select(-X1, -denom, -msr_calc) %>%
-  # for now, filter - remove later
+df <- df1 %>%
   filter(MSR_RESULT_ID==msrid) %>%
-  filter(PPS_ID==ppsnum) %>%
-  # end of filtering
-  arrange(PPS_ID, MSR_RESULT_ID, PER_END_DT) %>%
-  group_by(PPS_ID, MSR_RESULT_ID) %>%
-  do(padrows(.)) %>%
-  mutate(dsrip=ifelse(PER_END_DT >= dsrip_start, 1, 0),
-         yearmo=year(PER_END_DT)*12 + month(PER_END_DT),
-         time=yearmo - year(dsrip_start) * 12 - month(dsrip_start) + 1, # time should be 1 in first dsrip month
-         dsrip_ma=ma(dsrip, 12),
-         time_ma=ma(time, 12),
-         joint=time * dsrip,
-         joint_ma=ma(time * dsrip, 12)) %>%
-  filter(!is.na(dsrip_ma)) %>%
-  ungroup %>%
-  mutate(rownum=row_number())
-# verify that time starts at 1 when dsrip is 1
-
-df <- ppsall %>%
-  select(-X1, -denom, -msr_calc) %>%
-  filter(MSR_RESULT_ID==msrid) %>%
-  filter(PPS_ID==ppsnum) %>%
-  left_join(timedf, by = "PER_END_DT")
-
+  filter(PPS_ID==ppsnum)
 
 df %>%
   select(PER_END_DT, time, time_ma, dsrip, dsrip_ma, joint, joint_ma)
@@ -372,8 +344,95 @@ summary(mod1)
 Acf(residuals(mod1))
 Pacf(residuals(mod1))
 
+```
+
+
+## ITS regression on multiple variables
+```{r}
+# https://cran.r-project.org/web/packages/broom/vignettes/broom.html
+# https://cran.r-project.org/web/packages/broom/vignettes/broom_and_dplyr.html
+# https://drsimonj.svbtle.com/running-a-model-on-separate-groups
+
+library("broom")
+library("btools")
+library("lmtest")
+# library(tibble)
+
+ns(df1)
+ulabs
+
+a <- proc.time()
+regressions <- df1 %>%
+  filter(PPS_ID %in% (c(1:99)),
+         MSR_RESULT_ID %in% c("AMRRES", "IETIRES", "PPRRES", "PPVRES", "SMCRES")) %>%
+  arrange(PPS_ID, time) %>%
+  nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
+    mutate(
+    fit = map(data, ~ arima(.$MSR_RESULT, 
+                            xreg = as.matrix(.[, c("time_ma", "dsrip_ma", "joint_ma")]),
+                            order=c(0, 0, 11),
+                            fixed = c(rep(1, 11), NA, NA, NA, NA ))),
+    tidied = map(fit, tidy),
+    glanced = map(fit, glance))
+b <- proc.time()
+b - a
+
+
+regressions %>% ht
+
+tmp <- regressions$fit[1]
+tmp <- regressions %>% 
+
+str(tmp)
+str(tmp[[1]])
+lmtest::coeftest(tmp[[1]])
+
+aa <- arima(lh, order = c(1,0,0))
+str(aa)
+
+coeffs <- regressions %>% 
+  unnest(tidied) %>%
+  filter(str_sub(term, 1, 2) != "ma") %>%
+  mutate(tstat=estimate / std.error) %>%
+  pivot_longer(c(estimate, std.error, tstat)) %>%
+  select(PPS_ID, PPS_NAME, MSR_RESULT_ID, term, name, value)
+
+signif <- coeffs %>%
+  pivot_wider() %>%
+  filter(abs(tstat) >= 2, !term %in% c("intercept", "time_ma"))
+signif
+
+(usignif <- unique(signif %>% select(PPS_ID, PPS_NAME, MSR_RESULT_ID)) %>% mutate(unum=row_number()))
+
+usigcoeffs <- coeffs %>%
+  filter(name=="estimate", term %in% c("time_ma", "dsrip_ma", "joint_ma")) %>%
+  select(-name) %>%
+  pivot_wider(names_from = term, values_from = value) %>%
+  right_join(usignif)
+usigcoeffs
+
+regressions %>% 
+  unnest(glanced, .drop = TRUE)
+
+id <- 52; msr <- "SMCRES"
+usigcoeffs
+signum <- 6
+df1 %>%
+  # filter(PPS_ID==id, MSR_RESULT_ID==msr) %>%
+  right_join(usignif %>% filter(unum==signum)) %>%
+  ggplot(aes(time, MSR_RESULT)) + 
+  geom_line() + 
+  geom_point() + 
+  geom_vline(xintercept = 0, colour="blue") +
+  geom_vline(xintercept = 12, colour="blue", linetype="dashed") + 
+  scale_x_continuous(breaks=seq(-24, 48, 2)) +
+  ggtitle(paste(usigcoeffs$MSR_RESULT_ID[signum], usigcoeffs$PPS_ID[signum], usigcoeffs$PPS_NAME[signum])) +
+  theme_bw()
+
 
 ```
+
+
 
 
 ## explore
