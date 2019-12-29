@@ -353,18 +353,28 @@ Pacf(residuals(mod1))
 # https://cran.r-project.org/web/packages/broom/vignettes/broom_and_dplyr.html
 # https://drsimonj.svbtle.com/running-a-model-on-separate-groups
 
-library("broom")
-library("btools")
-library("lmtest")
-# library(tibble)
+# outlier identification
+# shift identification
+# ztests (one-sided??)
 
 ns(df1)
 ulabs
 
+ztest <- function(mod){
+  ztest <- lmtest::coeftest(mod)
+  ztdf <- ztest[, ] %>% 
+    as.data.frame() %>%
+    setNames(c("estimate", "std.error", "z.value", "p.value")) %>%
+    mutate(term=rownames(ztest)) %>%
+    as_tibble() %>%
+    select(term, everything())
+  ztdf
+}
+
 a <- proc.time()
 regressions <- df1 %>%
   filter(PPS_ID %in% (c(1:99)),
-         MSR_RESULT_ID %in% c("AMRRES", "IETIRES", "PPRRES", "PPVRES", "SMCRES")) %>%
+         MSR_RESULT_ID %in% c("AMRRES", "CAPC12MRES", "IETIRES", "PPRRES", "PPVRES", "SMCRES")) %>%
   arrange(PPS_ID, time) %>%
   nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
     mutate(
@@ -373,62 +383,70 @@ regressions <- df1 %>%
                             order=c(0, 0, 11),
                             fixed = c(rep(1, 11), NA, NA, NA, NA ))),
     tidied = map(fit, tidy),
-    glanced = map(fit, glance))
+    glanced = map(fit, glance),
+    ztest=map(fit, ztest))
 b <- proc.time()
 b - a
 
 
 regressions %>% ht
-
 tmp <- regressions$fit[1]
-tmp <- regressions %>% 
-
-str(tmp)
-str(tmp[[1]])
-lmtest::coeftest(tmp[[1]])
-
-aa <- arima(lh, order = c(1,0,0))
-str(aa)
-
-coeffs <- regressions %>% 
-  unnest(tidied) %>%
-  filter(str_sub(term, 1, 2) != "ma") %>%
-  mutate(tstat=estimate / std.error) %>%
-  pivot_longer(c(estimate, std.error, tstat)) %>%
-  select(PPS_ID, PPS_NAME, MSR_RESULT_ID, term, name, value)
-
-signif <- coeffs %>%
-  pivot_wider() %>%
-  filter(abs(tstat) >= 2, !term %in% c("intercept", "time_ma"))
-signif
-
-(usignif <- unique(signif %>% select(PPS_ID, PPS_NAME, MSR_RESULT_ID)) %>% mutate(unum=row_number()))
-
-usigcoeffs <- coeffs %>%
-  filter(name=="estimate", term %in% c("time_ma", "dsrip_ma", "joint_ma")) %>%
-  select(-name) %>%
-  pivot_wider(names_from = term, values_from = value) %>%
-  right_join(usignif)
-usigcoeffs
 
 regressions %>% 
   unnest(glanced, .drop = TRUE)
 
-id <- 52; msr <- "SMCRES"
-usigcoeffs
-signum <- 6
+coeffs <- regressions %>% 
+  unnest(tidied) %>%
+  filter(str_sub(term, 1, 2) != "ma") %>%
+  mutate(zstat=estimate / std.error) %>%
+  pivot_longer(c(estimate, std.error, zstat)) %>%
+  select(PPS_ID, PPS_NAME, MSR_RESULT_ID, term, name, value)
+
+regressions %>% 
+  unnest(ztest) %>%
+  select(-data, -fit, -tidied, -glanced) %>%
+  filter(term %in% c("dsrip_ma", "joint_ma"), p.value < .05) %>%
+  arrange(MSR_RESULT_ID, PPS_ID)
+
+coeffs %>% filter(PPS_ID==14, MSR_RESULT_ID=="PPRRES")
+
+pvalues <- regressions %>% 
+  unnest(ztest) %>%
+  select(PPS_ID, PPS_NAME, MSR_RESULT_ID, term, p.value) %>%
+  pivot_wider(names_from = term, values_from = p.value)
+
+pvalues %>%
+  filter(MSR_RESULT_ID=="PPVRES") %>%
+  pivot_longer(cols=c(dsrip_ma, joint_ma), names_to = "vname", values_to = "value") %>%
+  ggplot(aes(value)) +
+  geom_histogram(aes(y = ..density..), fill="lightblue", bins=30) +
+  geom_vline(xintercept = .05) +
+  facet_wrap(~vname, ncol=1)
+
+
+signif <- pvalues %>%
+  filter(dsrip_ma < .05 | joint_ma < .05)
+signif
+
+# CAPC12MRES	Children's Access to Primary Care - 12 to 24 Months
+
+# id <- 25; msr <- "CAPC12MRES"
+signum <- 16; pgroup <- signif[signum, ] %>% select(PPS_ID, PPS_NAME, MSR_RESULT_ID)
 df1 %>%
   # filter(PPS_ID==id, MSR_RESULT_ID==msr) %>%
-  right_join(usignif %>% filter(unum==signum)) %>%
+  right_join(pgroup) %>%
   ggplot(aes(time, MSR_RESULT)) + 
   geom_line() + 
   geom_point() + 
   geom_vline(xintercept = 0, colour="blue") +
   geom_vline(xintercept = 12, colour="blue", linetype="dashed") + 
   scale_x_continuous(breaks=seq(-24, 48, 2)) +
-  ggtitle(paste(usigcoeffs$MSR_RESULT_ID[signum], usigcoeffs$PPS_ID[signum], usigcoeffs$PPS_NAME[signum])) +
+  ggtitle(paste(pgroup$MSR_RESULT_ID, pgroup$PPS_ID, pgroup$PPS_NAME)) +
   theme_bw()
 
+
+regressions %>% 
+  unnest(glanced, .drop = TRUE)
 
 ```
 
