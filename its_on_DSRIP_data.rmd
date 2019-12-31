@@ -1,15 +1,19 @@
 ---
-title: 'Boyd ITS analysis'
+title: 'Preliminary ITS analysis'
 date: "`r format(Sys.time(), '%B %d, %Y')`"
 output:
-  html_notebook: 
+  html_notebook:
     df_print: paged
     toc: yes
     toc_depth: 5
+always_allow_html: yes    
+    
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
+
+# Setup code - run all of these chunks
 <!-- setup chunk -->
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
@@ -17,8 +21,17 @@ knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
 
 
 ```{r system_specific_values, include=FALSE}
-# ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/CMA Files/chris_workflow/data/"
-ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/CMA Files/dsrip/chris_workflow/data/"
+# ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/chris_workflow/data/"
+team_dir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/"
+
+chris_source_dir <- paste0(team_dir, "CMA Files/dsrip/chris_workflow/data/") # not used now
+
+don_dir <- paste0(team_dir, "Don's Files/data/don/")
+chris_dir <- paste0(team_dir, "Don's Files/data/chris_frozen/")
+
+# significance pvalue for regressions -- define in only 1 place to avoid mistakes
+pcut <- .05
+# pcut <- .10
 
 ```
 
@@ -27,12 +40,11 @@ ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/CMA Files/dsrip/chris_wor
 m_long <- "V_mapp_pps_msr_mo_long.csv"
 a_long <- "v_mapp_pps_msr_ann_long.csv"
 
-ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
+# ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
 
 dsrip_start <- as.Date("2015-07-01")
 
 ```
-
 
 
 ```{r libraries, include=FALSE}
@@ -53,12 +65,17 @@ library("kableExtra")
 
 library("btools")
 
+library("DT")
+
 library("zoo") # for rollapply
 
 library("broom")
 library("forecast") # for auto.arima
 library("lmtest")
 library("tsoutliers")
+
+# devtools::install_github("business-science/anomalize")
+library("anomalize")
 
 
 ```
@@ -74,133 +91,207 @@ ma <- function(x, period) {
 
 se <- function(model) {sqrt(diag(vcov(model)))}
 
+msr_name <- function(msr_id, measures_df=measures) {
+  # return the measure name MSR_RESULT_NAME for a given measure id MSR_RESULT_ID
+  # requires as input a dataframe that has both MSR_RESULT_ID and MSR_RESULT_NAME
+  tibble(MSR_RESULT_ID=msr_id) %>%
+    left_join(measures_df) %>%
+    .$MSR_RESULT_NAME
+}
+
+msr_improve <- function(msr_id, measures_df=measures) {
+  # return the measure improve direction for a given measure id MSR_RESULT_ID
+  # requires as input a dataframe that has both MSR_RESULT_ID and MSR_RESULT_NAME
+  tibble(MSR_RESULT_ID=msr_id) %>%
+    left_join(measures_df) %>%
+    .$improve
+}
+
+pps_wrap <- function(PPS_ID, PPS_NAME, maxlen=100, wrap=25) {
+  name <- str_sub(PPS_NAME, 1, maxlen)
+  paste0(str_pad(PPS_ID, 2, pad="0"), ": ", name) %>% # zero-pad for better sorting
+    str_wrap(wrap)
+}
+
+
 ```
 
 
 # ONETIME data prep
-```{r ONETIME_GetAndSaveData}
-# just in case the data change or disappear, get them and save them locally
-# read EVERYTHING as character just in case there are odd things that need to be fixed
-ppsm <- read_csv(paste0(ddir, m_long), col_types = cols(.default= col_character()))
-ppsa <- read_csv(paste0(ddir, a_long), col_types = cols(.default= col_character()))
-ppsnet <- read_csv(paste0(ddir, ppsnet_long), col_types = cols(.default= col_character()))
 
-save(ppsm, ppsa, ppsnet, file=here::here("data", "ignore", "dsripdata.rdata"))
+DO NOT RUN THESE CHUNKS UNLESS USING NEW/IMPROVED DATA.
 
-```
+The code in this section is designed to be run only once, to create and save convenient versions of data files. To run any of this code again, either step through it interactively or change the chunk headers to "eval=TRUE".
+
+Note: The pps-level data files used here originally came from the Dropbox folder:
+
+    DSRIP TSA_CA Team Info/chris_workflow/data/
+    
+On approximately December 20, 2019 I copied the files from that location to:
+
+    DSRIP TSA_CA Team Info/Don's Files/data/chris_frozen/
+    
+so that they would be "frozen" until I copied updated versions. In the analysis below I use these frozen versions, although it is possible to rerun the analysis with new files by pointing to Chris's source directory rather than the frozen directory.    
 
 
 ## Extract metadata from Chris's project-level data
-```{r CAUTION_ONETIME_metadata}
 
-# CAUTION!! The data I used previously has disappeared! Do not overwrite it. I have commented out the saveRDS command.
+Create a file with information on each measure:
 
-# Chris's monthly project-level data appears to have a few variables of value:
-#  - UNIT_LBL tells us how to calculate a measure from numerator and denominator
-#  - MSR_AS_OF_DT probably tells us the vintage of the data that were used in calculating a measure
-chris_m <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
-glimpse(chris_m)
-count(chris_m, UNIT_LBL)
-count(chris_m, MSR_AS_OF_DT)
-count(chris_m, PRCS_DT) # what is PRCS_DT??
+- Label
+- Units (how it is calculated)
+- Whether improvement requires an increase or decrease
 
-#.. is UNIT_LBL unique for each measure (we hope)? ----
-UNIT_LBL <- chris_m %>%
+```{r ONETIME_metadata, eval=FALSE}
+# the rds file v_mapp_pps_msr_ann_long-CRTH9H2.rds appears to have a lot of useful metadata
+# there do not appear to be other files that are as close to raw data as this
+
+# There appear to be useful date variables that may tell us the vintage of the data used in constructing measures.
+# There is also informatoin on goals and targets.
+# And information on the units that is helpful in calculating measures.
+
+chrisdf <- readRDS(paste0(chris_dir, "v_mapp_pps_msr_ann_long-CRTH9H2.rds"))
+glimpse(chrisdf)
+count(chrisdf, PPS_ID, PPS_NAME)
+
+# create a master data frame with information on measures and their units
+measures1 <- chrisdf %>%
+  filter(PPS_ID != 51) %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL) %>%
-  summarise(nobs=n()) %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  mutate(nlabels=n()) %>%
+  summarise(npps=length(unique(PPS_ID))) %>%
   ungroup
-UNIT_LBL %>%   filter(nlabels > 1)
-# good, all measures have only 1 UNIT_LBL
-count(UNIT_LBL, UNIT_LBL)
-#   UNIT_LBL                n
-#   <chr>               <int>
-# 1 Per 1,000 Newborns      1
-# 2 Per 100 Members         2
-# 3 Per 100,000 Members    29
-# 4 Percentage             35
-# saveRDS(UNIT_LBL, here::here("data", "ignore", "UNIT_LBL.rds"))
+# 179 measures
+count(measures1, UNIT_LBL)
+count(measures1, npps)
 
-#.. get the measure names and save ----
+measures1 %>% filter(is.na(UNIT_LBL)) # does not look like we will need any of these
+
+# add a variable "improve" to signify whether improvement is measured by increase or decrease
+measures <- measures1 %>% 
+  arrange(MSR_RESULT_ID) %>%
+  mutate(improve=case_when(
+    # specific measures first, to override text parsing
+    
+    # measures that improve when they increase
+    # NOTE: AMRRES higher means more use of controller meds, less of rescue meds
+    MSR_RESULT_ID %in% c("ADVQUITRES", "AMRRES", "COMMRES", "CUSTRES",
+                         "EZINSTRES", paste0("HI", c(1, 2, 4)),
+                         "OSRES", "RATERES") ~ "increase",  
+    
+    # measures that improve when they decrease
+    MSR_RESULT_ID %in% c("DD1RES",
+                         paste0("HIV", 1:3),
+                         "HPAINRES", "LSRDSRES",
+                         "PAINCRES",
+                         "PDI90RES", "PDI91RES", "PDI92RES",
+                         "PQI9RES", "PQI13RES", "PQI16RES",
+                         "PQI90RES", "PQI90V2RES", "PQI90V3RES",
+                         "PQI91RES", 
+                         "PQI92RES", "PQI92V2RES", "PQI92V3RES",
+                         paste0("Obese", 1:2),
+                         paste0("Preg", 1:5),
+                         paste0("Prem", 1:7),
+                         "Smok") ~ "decrease",
+    
+    # the following improve when they increase
+    str_detect(MSR_RESULT_NAME, coll("access", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("adher", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("care", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("controlling", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("discuss", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("engagement", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("follow", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("initiation", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("improve", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("literacy", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("manage", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("monitor", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("offered", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("receiv", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("screen", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("talk", ignore_case=TRUE)) ~ "increase",
+    str_detect(MSR_RESULT_NAME, coll("use of", ignore_case=TRUE)) ~ "increase",
+                           
+    # the following improve when they decrease
+    str_detect(MSR_RESULT_NAME, coll("adolescent pregnancy", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("age-adjusted", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("avoidable", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("admission rate", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("complication", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("ED use", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("emergency department visit", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("mortality rate", ignore_case=TRUE)) ~ "decrease",
+    str_detect(MSR_RESULT_NAME, coll("preventable", ignore_case=TRUE)) ~ "decrease",
+    
+    # all other
+    TRUE ~ "unknown"))
+count(measures, improve)
+count(measures %>% filter(npps==25), improve) # 69 measures for all pps, where we know what improvement is
+
+measures %>% filter(improve=="increase")
+measures %>% filter(improve=="decrease")
+measures %>% filter(improve=="unknown")
+
+saveRDS(measures, paste0(don_dir, "measures.rds"))
+
+# check
+measures <- readRDS(paste0(don_dir, "measures.rds"))
+glimpse(measures)
+ht(measures)
 
 
 #.. look at MSR_AS_OF_DT ----
 # do as_of dates change within a measure-pps-project?
-mdates <- chris_m %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, DSRIP_PROJ_ID, DSRIP_PROJ_TITLE, PPS_ID, PPS_NAME) %>%
-  summarise(ndates=length(unique(MSR_AS_OF_DT)))
-
-tmp <- mdates[1, ] %>% 
-  select(-ndates) %>%
-  left_join(chris_m)
-# yes, the MSR_AS_OF_DT can change within a measure, project, pps, over time -- it looks like they must
+# mdates <- chris_m %>%
+#   group_by(MSR_RESULT_ID, MSR_RESULT_NAME, DSRIP_PROJ_ID, DSRIP_PROJ_TITLE, PPS_ID, PPS_NAME) %>%
+#   summarise(ndates=length(unique(MSR_AS_OF_DT)))
+# from other analysis - the MSR_AS_OF_DT can change within a measure, project, pps, over time -- it looks like they must
 # calculate a measure and then keep it for later dates
 
 ```
 
 
-## take a look at the data and do some light cleaning
-```{r ONETIME_look}
-load(here::here("data", "ignore", "dsripdata.rdata"))
-ppsm
-# which pps's do we have?
-count(ppsm, PPS_ID, PPS_NAME)
-# looks like we should drop 51 DOH Demonstration PPS
-# 2019-12-28 no longer has pps 51
+## Simple data checks and create a clean monthly file
+```{r ONETIME_clean, eval=FALSE}
+# read as character to look for trouble
+ppsm <- read_csv(paste0(chris_dir, m_long), col_types = cols(.default= col_character()))
+glimpse(ppsm)
 
-count(ppsm, PER_END_DT)
+count(ppsm, PPS_ID, PPS_NAME) # good, we don't have pps 51
+# are there any measures not in our measures database?
+setdiff(unique(ppsm$MSR_RESULT_ID), measures$MSR_RESULT_ID) # nope, none
 
-# do some light data cleaning on monthly data ----
+# do some light data cleaning
 ppsm2 <- ppsm %>%
   mutate(PPS_ID=as.integer(PPS_ID),
          PER_END_DT=as.Date(str_sub(PER_END_DT, 1, 10))) %>% # 2014-06-30 has time included, don't parse that
   mutate_at(vars(MSR_NUM, MSR_DEN, MSR_RESULT, PERFRM_GOAL), ~as.numeric(.))
 summary(ppsm2)
 
-# look at some missing values
+# look at some missing values for the numerator
 ppsm2 %>% filter(is.na(MSR_NUM))
 # are they really missing? look at the character data
 missids <- ppsm2 %>% filter(is.na(MSR_NUM)) %>% .[["X1"]]
 ppsm %>% filter(X1 %in% missids) # yes, missing in the character data, also; I guess we have to accept it for now
 
-
-# compare to what Chris created to see if there are differences
-tmp <- readRDS(paste0(ddir, "V_mapp_pps_msr_mo_long.rds"))
-glimpse(ppsm2); glimpse(tmp)
-count(tmp, PER_END_DT)
-setdiff(names(tmp), names(ppsm)) 
-# no longer different
-# are the missing values in ppsm also missing in Chris's data? pick one
-tmp %>% filter(PPS_ID==9, PER_END_DT=="2017-03-31", MSR_RESULT_ID=="FPCRES") # yes, missing there, too
-# tentative conclusion for now - use the long csv data
-
-
 # quick check: is MSR_RESULT approx equal to NUM / DEN scaled?
-ulabs <- readRDS(here::here("data", "ignore", "UNIT_LBL.rds")) # get the labels so we know how to calculate each measure
-count(ulabs, UNIT_LBL)
 measure_check <- ppsm2 %>%
-  left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
+  left_join(measures %>% select(MSR_RESULT_ID, UNIT_LBL), by = "MSR_RESULT_ID") %>%
   mutate(denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
                          UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
                          UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
                          UNIT_LBL == "Percentage" ~ MSR_DEN / 100,
-                         # attend to measures for which we don't have UNIT_LBL, based on data-checking by hand
-                         MSR_RESULT_ID %in% c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES",
-                                              "LSRAPRES", "LSRDSRES", "PAINCRES") ~ MSR_DEN / 100,
                          TRUE ~ 9e-99),
          msr_calc=MSR_NUM / denom,
          diff=msr_calc - MSR_RESULT) %>%
   filter(diff!=0)
 quantile(measure_check$diff, na.rm=TRUE) # good, they match almost perfectly
 
-
 ```
 
 
-## create monthly file with statewide records, as pps 99
-```{r ONETIME_add_statewide}
-count(ppsm2, PPS_ID)
+## Create slimmed-down file with statewide records, as pps 99
+```{r ONETIME_state, eval=FALSE}
 
 state <- ppsm2 %>%
   group_by(MSR_RESULT_ID, PER_END_DT) %>% 
@@ -208,11 +299,9 @@ state <- ppsm2 %>%
   mutate(PPS_ID=99, PPS_NAME="Statewide")
 
 # add the state total and calc measures
-pct_msr <- c("DD1RES", "DISRES", "EDUNIRES", "HPAINRES", "LSRAPRES", "LSRDSRES", "PAINCRES")
-ppsall <- bind_rows(ppsm2, state) %>%
-  left_join(ulabs %>% select(MSR_RESULT_ID, UNIT_LBL)) %>%
-  mutate(UNIT_LBL=ifelse(MSR_RESULT_ID %in% pct_msr, "Percentage", UNIT_LBL),
-         denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
+pps3 <- bind_rows(ppsm2, state) %>%
+  left_join(measures %>% select(MSR_RESULT_ID, UNIT_LBL, improve)) %>%
+  mutate(denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
                          UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
                          UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
                          UNIT_LBL == "Percentage" ~ MSR_DEN / 100,
@@ -221,23 +310,23 @@ ppsall <- bind_rows(ppsm2, state) %>%
          MSR_RESULT=ifelse(PPS_ID==99, msr_calc, MSR_RESULT),
          idname=paste0(str_pad(PPS_ID, 2, pad="0"), ": ", PPS_NAME) %>% str_wrap(25)) %>% # zero-pad for better sorting
   arrange(MSR_RESULT_ID, PPS_ID, PER_END_DT)
-# tmp <- ppsall %>% filter(abs(MSR_RESULT - msr_calc) > 0.1) # good, no errors
+# tmp <- pps3 %>% filter(abs(MSR_RESULT - msr_calc) > 0.1) # good, no errors
+glimpse(pps3)
+summary(pps3)
+ppsall <- pps3 %>% select(-c(X1, denom, msr_calc))
+saveRDS(ppsall, paste0(don_dir, "ppsall.rds"))
+
+ppsall <- readRDS(paste0(don_dir, "ppsall.rds"))
 glimpse(ppsall)
-saveRDS(ppsall, here::here("data", "ignore", "ppsall.rds"))
 
 ```
 
 
-# Start of analysis -- with combined PPS/Statewide data
-```{r getdata}
-ppsall <- readRDS(here::here("data", "ignore", "ppsall.rds"))
-ulabs <- readRDS(here::here("data", "ignore", "UNIT_LBL.rds")) # get the labels so we know how to calculate each measure
-ulabs
+## Add dsrip dummy, time relative to dsrip start, and moving averages 
 
-```
+```{r ONETIME_addma, eval=FALSE}
+ppsall <- readRDS(paste0(don_dir, "ppsall.rds"))
 
-
-```{r}
 # create moving average of time, dsrip, and interaction variables
 # create a sequence of month end dates is first of each month minus 1 day
 (end_dates <- seq(as.Date("2013-02-01"), length=96, by="1 month") - 1) # Jan 2013 - Dec 2020
@@ -252,28 +341,51 @@ timedf <- tibble(PER_END_DT=end_dates) %>%
          dsrip_ma=ma(dsrip, 12),
          interaction_ma=ma(interaction, 12)) %>%
   # filter(!is.na(time_ma)) %>%
-  filter(PER_END_DT >= "2014-06-30")
-
+  filter(PER_END_DT >= "2014-06-30") %>%
+  mutate(rownum=row_number()) # reset this to be 1 at dsrip_start
 timedf
+saveRDS(timedf, paste0(don_dir, "timedf.rds"))
+
+ppsall_ma <- ppsall %>%
+  left_join(timedf, by = "PER_END_DT")
+
+glimpse(ppsall_ma)
+count(ppsall_ma, MSR_RESULT_ID)
+count(ppsall_ma, improve)
+ppsall_ma %>% filter(improve=="unknown")
+measures %>% filter(MSR_RESULT_ID=="LSRAPRES") # Antipsychotic Use in Persons with Dementia +/-
+
+saveRDS(ppsall_ma, paste0(don_dir, "ppsall_ma.rds"))
 
 ```
 
 
-# test out ITS regression, different methods
-```{r its}
-# verify that time starts at 1 when dsrip is 1
-df1 <- ppsall %>%
-  select(-X1, -denom, -msr_calc) %>%
-  left_join(timedf, by = "PER_END_DT")
-count(df, MSR_RESULT_ID)
-saveRDS(df1, "pps_all_ma.rds")
+# START OF ANALYSIS -- with combined PPS/Statewide data
+```{r getdata, include=FALSE}
+ppsdf <- readRDS(paste0(don_dir, "ppsall_ma.rds"))
+measures <- readRDS(paste0(don_dir, "measures.rds"))
+measures
 
+```
+
+
+## Exploration -- test out ITS regression, different methods
+
+DO NOT RUN THIS SECTION UNLESS EXPLORING.
+
+This section walks through a set of ITS regressions, but the results will not be shown unless you change the chunk header to "eval=TRUE". It starts with a simple OLS model that is tainted because it does not account for either the moving-average nature of the dependent variable or the moving-average nature of the error term. It moves through a series of ARIMA models, ending with the proper model that specifies both the data and the error term correctly.
+
+
+```{r its_explore, eval=FALSE}
 msrid <- "PPRRES"
-msrid <- "AMRRES"
 ppsnum <- 27
+
+msrid <- "AMRRES"
 ppsnum <- 99
 
-df <- df1 %>%
+measures %>% filter(MSR_RESULT_ID==msrid)
+
+df <- ppsdf %>%
   filter(MSR_RESULT_ID==msrid) %>%
   filter(PPS_ID==ppsnum)
 
@@ -283,7 +395,11 @@ df %>%
 df %>%
   select(time, time_ma, MSR_RESULT) %>%
   mutate(x=time_ma) %>%
-  ggplot(aes(x, MSR_RESULT)) + geom_line() + geom_point() + geom_vline(xintercept = 0) + scale_x_continuous(breaks=seq(-24, 48, 2))
+  ggplot(aes(x, MSR_RESULT)) + 
+  geom_line() + 
+  geom_point() + 
+  geom_vline(xintercept = 0) + 
+  scale_x_continuous(breaks=seq(-24, 48, 2))
 
 
 xvars <- as.matrix(df[, c("time", "dsrip", "interaction")])
@@ -349,18 +465,29 @@ Pacf(residuals(mod1))
 ```
 
 
-## ITS regression on multiple variables
-```{r}
+## ITS regression on multiple measures
+
+The regressions below are based on the arima method that takes into consideration moving-average dependent variables and moving-average error terms as discussed [here](https://github.com/donboyd5/DSRIP/blob/master/appendix_its_ma.rmd).
+
+
+```{r its_reg, include=FALSE}
+# run the regressions and consolidate results
+
+# Note: this uses the arima method for moving-average dependent variables, as discussed here:
+#    https://github.com/donboyd5/DSRIP/blob/master/appendix_its_ma.rmd
+
+
+# useful automation notes:
 # https://cran.r-project.org/web/packages/broom/vignettes/broom.html
 # https://cran.r-project.org/web/packages/broom/vignettes/broom_and_dplyr.html
 # https://drsimonj.svbtle.com/running-a-model-on-separate-groups
 
-# outlier identification
-# shift identification
-# ztests (one-sided??)
-
-ns(df1)
-ulabs
+# To do:
+#   automatic outlier identification
+#   automatic shift identification
+#   one-sided ztests?
+#   assumption checks
+#   robustness checks
 
 ztest <- function(mod){
   ztest <- lmtest::coeftest(mod)
@@ -373,11 +500,33 @@ ztest <- function(mod){
   ztdf
 }
 
+
+# get a list of potential measures
+msr_use <- measures %>%
+  filter(npps==25, improve != "unknown") %>%
+  filter(!str_detect(MSR_RESULT_ID, "PQI90"),
+         !str_detect(MSR_RESULT_ID, "PQI92"))
+msr_use
+msr_ids <- msr_use$MSR_RESULT_ID
+
+# before starting, get observation counts for these measures and pps's and drop any that aren't enough
+obs_counts <- ppsdf %>%
+  filter(MSR_RESULT_ID %in% msr_ids) %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  summarise(n=n(), n.notNA=sum(!is.na(MSR_RESULT))) %>%
+  ungroup
+obs_counts %>% filter(n.notNA < n)
+obs_counts %>% filter(n == n.notNA, n==57) # ~ 500 regressions
+
+
+regdata <- ppsdf %>%
+  right_join(obs_counts %>% filter(n == n.notNA, n==57))
+
 a <- proc.time()
-regressions <- df1 %>%
-  filter(PPS_ID %in% (c(1:99)),
-         MSR_RESULT_ID %in% c("AMRRES", "CAPC12MRES", "IETIRES", "PPRRES", "PPVRES", "SMCRES")) %>%
-  arrange(PPS_ID, time) %>%
+regressions <- regdata %>%
+  # additional filtering if desired:
+  # filter(PPS_ID %in% (c(1:99)) %>%
+  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
   nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
     mutate(
     fit = map(data, ~ arima(.$MSR_RESULT, 
@@ -388,75 +537,182 @@ regressions <- df1 %>%
     glanced = map(fit, glance),
     ztest=map(fit, ztest))
 b <- proc.time()
-b - a
-
+b - a # 17 seconds for 516 regressions
 
 regressions %>% ht
-tmp <- regressions$fit[1]
-
-regressions %>% 
-  unnest(glanced, .drop = TRUE)
 
 coeffs <- regressions %>% 
   unnest(tidied) %>%
   filter(str_sub(term, 1, 2) != "ma") %>%
-  mutate(zstat=estimate / std.error) %>%
-  pivot_longer(c(estimate, std.error, zstat)) %>%
-  select(PPS_ID, PPS_NAME, MSR_RESULT_ID, term, name, value)
-
-regressions %>% 
-  unnest(ztest) %>%
-  select(-data, -fit, -tidied, -glanced) %>%
-  filter(term %in% c("dsrip_ma", "interaction_ma"), p.value < .05) %>%
-  arrange(MSR_RESULT_ID, PPS_ID)
-
-coeffs %>% filter(PPS_ID==14, MSR_RESULT_ID=="PPRRES")
+  select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate)
 
 pvalues <- regressions %>% 
   unnest(ztest) %>%
-  select(PPS_ID, PPS_NAME, MSR_RESULT_ID, term, p.value) %>%
+  select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
   pivot_wider(names_from = term, values_from = p.value)
 
-pvalues %>%
-  filter(MSR_RESULT_ID=="PPVRES") %>%
-  pivot_longer(cols=c(dsrip_ma, interaction_ma), names_to = "vname", values_to = "value") %>%
-  ggplot(aes(value)) +
-  geom_histogram(aes(y = ..density..), fill="lightblue", bins=30) +
-  geom_vline(xintercept = .05) +
-  facet_wrap(~vname, ncol=1)
+results <- regressions %>%
+  select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
+  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
+  left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
+  left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
+glimpse(results)
+
+# now determine which regressions were significant and coefficients had the desired sign
+
+gooddf <- results %>%
+  mutate(good=case_when((improve == "increase") &
+                          (dsrip_ma.pvalue <= pcut) &
+                          (dsrip_ma.coeff > 0) ~ 1,
+                        
+                        (improve == "increase") &
+                          (interaction_ma.pvalue <= pcut) &
+                          (interaction_ma.coeff > 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (dsrip_ma.pvalue <= pcut) & 
+                          (dsrip_ma.coeff < 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (interaction_ma.pvalue <= pcut) &
+                          (interaction_ma.coeff < 0) ~ 1,
+                        
+                        TRUE ~ 0))
+# mean(gooddf$good)
+
+```
+
+## Summary of results
+
+This program ran a total of `r nrow(gooddf)` regressions, including `r length(unique(gooddf$MSR_RESULT_ID))` measures, `r length(setdiff(unique(gooddf$PPS_ID), 1))` PPS's, and the statewide weighted average. I only included measures that were available for all 25 PPS's, and excluded any combinations of measures and PPS's for which there were one or more missing observations.
+
+Overall, DSRIP had a significant effect in `r sprintf("%2.1f", mean(gooddf$good) * 100)`% of these regressions. I considered the DSRIP effect significant if the DSRIP intercept or DSRIP slope or both were significantly different from 0 at the `r sprintf("%0.2f", pcut)` level and the relevant DSRIP coefficient(s) had the sign needed for improvement in the measure.
 
 
-signif <- pvalues %>%
-  filter(dsrip_ma < .05 | interaction_ma < .05)
-signif
+## Tables of results
+```{r include=TRUE, paged.print=TRUE}
 
-# CAPC12MRES	Children's Access to Primary Care - 12 to 24 Months
+h2 <- paste0("DSRIP slope or intercept was significant (", sprintf("%0.2f", pcut), " level) and measure was improving")
 
-# id <- 25; msr <- "CAPC12MRES"
-signum <- 16; pgroup <- signif[signum, ] %>% select(PPS_ID, PPS_NAME, MSR_RESULT_ID)
-df1 %>%
-  # filter(PPS_ID==id, MSR_RESULT_ID==msr) %>%
-  right_join(pgroup) %>%
-  ggplot(aes(time, MSR_RESULT)) + 
-  geom_line() + 
-  geom_point() + 
-  geom_vline(xintercept = 0, colour="blue") +
-  geom_vline(xintercept = 12, colour="blue", linetype="dashed") + 
-  scale_x_continuous(breaks=seq(-24, 48, 2)) +
-  ggtitle(paste(pgroup$MSR_RESULT_ID, pgroup$PPS_ID, pgroup$PPS_NAME)) +
-  theme_bw()
+h1 <- "For each measure, percent of PPS's for which"
+gooddf %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  formatRound(columns=c('pct_signif'), digits=1)
 
 
-regressions %>% 
-  unnest(glanced, .drop = TRUE)
+h1 <- "For each PPS, percent of measures for which"
+gooddf %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  formatRound(columns=c('pct_signif'), digits=1)
+
 
 ```
 
 
-## outlier and level shifts detection
-```{r}
-df <- readRDS("pps_all_ma.rds")
-glimpse(df)
+## Facet plots for the 5 measures that had the greatest percentage of PPS's for which DSRIP was significant and indicated improvement
+```{r meas_regplot, fig.height=12, fig.width=12}
+# get the measures we want
+mlist <- gooddf %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif)
+
+f <- function(meas) {
+  p <- ppsdf %>%
+  filter(MSR_RESULT_ID == meas) %>%
+  left_join(gooddf %>%
+              select(PPS_ID, MSR_RESULT_ID, good)) %>%
+  mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
+         my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
+         good=factor(good)) %>%
+  arrange(PPS_ID, time) %>%
+  ggplot(aes(time, MSR_RESULT, colour=good)) +
+  scale_colour_manual(values=c("black", "orange")) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+  scale_x_continuous(breaks=brks) +
+  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+  theme_bw() +
+  facet_wrap(~idname, ncol=5, scales = "free") +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
+  ggtitle(paste0(meas, ": ", msr_name(meas)),
+          subtitle=paste0("Improvement requires ", msr_improve(meas), ".",
+                          " PPS's with significant DSRIP effect (slope or intercept) at ",
+                          sprintf("%.2f", pcut),
+                          " level are orange.",
+                          " MY4 points marked in pink."))
+ p
+}
+
+brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+
+for(meas in mlist$MSR_RESULT_ID[1:5]){
+  p <- f(meas)
+  print(p)
+  ggsave(here::here("results", paste0(meas, "_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
+}
+
+
+```
+
+
+
+## Facet plots for the 5 PPS's that had the greatest percentage of measures for which DSRIP was significant and indicated improvement
+```{r pps_regplot, fig.height=12, fig.width=12}
+# get the PPSs we want
+plist <- gooddf %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif)
+
+# we can't take all measures for each top-5 pps -- there are too many measures -- for now, just use the significant ones
+
+g <- function(ppsid) {
+  gname <- ppsdf %>% filter(PPS_ID == ppsid) %>% filter(row_number()==1) %>% .$idname
+    
+  p <- ppsdf %>% 
+    filter(PPS_ID == ppsid) %>%
+    left_join(gooddf %>% select(PPS_ID, MSR_RESULT_ID, good)) %>%
+    filter(good==1) %>%
+    mutate(my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
+         good=factor(good),
+         mname=paste0(MSR_RESULT_ID, ": ", msr_name(MSR_RESULT_ID)) %>% str_wrap(35)) %>%
+    arrange(MSR_RESULT_ID, time) %>%
+    ggplot(aes(time, MSR_RESULT)) +
+    geom_line(colour="orange") +
+    geom_point(colour="orange") +
+    geom_line(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+    geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+    scale_x_continuous(breaks=brks) +
+    geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+    geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+    theme_bw() +
+    facet_wrap(~mname, ncol=2, scales = "free") +
+    theme(legend.position = "none") +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
+    ggtitle(gname,
+            subtitle=paste0("Selected measures with significant DSRIP effect (slope or intercept) at ", sprintf("%.2f", pcut),
+                            " level. MY4 points marked in pink."))
+ p
+}
+
+brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+
+for(ppsid in plist$PPS_ID[1:5]){
+  p <- g(ppsid)
+  print(p)
+  ggsave(here::here("results", paste0("pps_", ppsid, "_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
+}
 
 
 ```
@@ -464,14 +720,329 @@ glimpse(df)
 
 
 
+## Robustness check auto.arima
+
+```{r reg_auto}
+
+# auto.arima(df$MSR_RESULT, xreg=xvars_ma)
+a <- proc.time()
+regressions_auto <- regdata %>%
+  # additional filtering if desired:
+  # filter(PPS_ID %in% c(99)) %>% # , MSR_RESULT_ID %in% "CAPC12MRES"
+  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
+  nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
+    mutate(
+    fit = map(data, ~ auto.arima(.$MSR_RESULT, 
+                            xreg = as.matrix(.[, c("time", "dsrip", "interaction")]))),
+    tidied = map(fit, tidy),
+    glanced = map(fit, glance),
+    ztest=map(fit, ztest))
+b <- proc.time()
+b - a # about 2+ mins for 516 regressions
+saveRDS(regressions_auto, here::here("results", "regressions_auto.rds"))
+
+regressions_auto %>% ht
+
+coeffs <- regressions_auto %>% 
+  unnest(tidied) %>%
+  filter(str_sub(term, 1, 2) != "ma") %>%
+  select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate)
+
+pvalues <- regressions_auto %>% 
+  unnest(ztest) %>%
+  select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
+  pivot_wider(names_from = term, values_from = p.value)
+
+results <- regressions_auto %>%
+  select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
+  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
+  left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
+  left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
+glimpse(results)
+
+# now determine which regressions were significant and coefficients had the desired sign
+
+gooddf <- results %>%
+  mutate(good=case_when((improve == "increase") &
+                          (dsrip.pvalue <= pcut) &
+                          (dsrip.coeff > 0) ~ 1,
+                        
+                        (improve == "increase") &
+                          (interaction.pvalue <= pcut) &
+                          (interaction.coeff > 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (dsrip.pvalue <= pcut) & 
+                          (dsrip.coeff < 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (interaction.pvalue <= pcut) &
+                          (interaction.coeff < 0) ~ 1,
+                        
+                        TRUE ~ 0))
+mean(gooddf$good)
+
+```
+
+## Robustness - auto.arima Tables of results
+```{r include=TRUE}
+
+h2 <- paste0("DSRIP slope or intercept was significant (", sprintf("%0.2f", pcut), " level) and measure was improving")
+
+h1 <- "For each measure, percent of PPS's for which"
+gooddf %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  formatRound(columns=c('pct_signif'), digits=1)
+
+
+h1 <- "For each PPS, percent of measures for which"
+gooddf %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  formatRound(columns=c('pct_signif'), digits=1)
+
+```
+
+
+
+
+## Robustness check auto.arima ma
+
+```{r reg_automa}
+
+# auto.arima(df$MSR_RESULT, xreg=xvars_ma)
+a <- proc.time()
+regressions_automa <- regdata %>%
+  # additional filtering if desired:
+  # filter(PPS_ID %in% c(99)) %>% # , MSR_RESULT_ID %in% "CAPC12MRES"
+  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
+  nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
+    mutate(
+    fit = map(data, ~ auto.arima(.$MSR_RESULT, 
+                            xreg = as.matrix(.[, c("time_ma", "dsrip_ma", "interaction_ma")]))),
+    tidied = map(fit, tidy),
+    glanced = map(fit, glance),
+    ztest=map(fit, ztest))
+b <- proc.time()
+b - a # about 2+ mins for 516 regressions
+saveRDS(regressions_automa, here::here("results", "regressions_automa.rds"))
+
+regressions_automa %>% ht
+
+coeffs <- regressions_automa %>% 
+  unnest(tidied) %>%
+  filter(str_sub(term, 1, 2) != "ma") %>%
+  select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate)
+
+pvalues <- regressions_automa %>% 
+  unnest(ztest) %>%
+  select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
+  pivot_wider(names_from = term, values_from = p.value)
+
+results <- regressions_automa %>%
+  select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
+  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
+  left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
+  left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
+glimpse(results)
+
+# now determine which regressions were significant and coefficients had the desired sign
+
+gooddf <- results %>%
+  mutate(good=case_when((improve == "increase") &
+                          (dsrip_ma.pvalue <= pcut) &
+                          (dsrip_ma.coeff > 0) ~ 1,
+                        
+                        (improve == "increase") &
+                          (interaction_ma.pvalue <= pcut) &
+                          (interaction_ma.coeff > 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (dsrip_ma.pvalue <= pcut) & 
+                          (dsrip_ma.coeff < 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (interaction_ma.pvalue <= pcut) &
+                          (interaction_ma.coeff < 0) ~ 1,
+                        
+                        TRUE ~ 0))
+
+# alternative definition of good -- slope only
+gooddf <- results %>%
+  mutate(good=case_when(
+                        (improve == "increase") &
+                          (interaction_ma.pvalue <= pcut) &
+                          (interaction_ma.coeff > 0) ~ 1,
+                        
+                        (improve == "decrease") &
+                          (interaction_ma.pvalue <= pcut) &
+                          (interaction_ma.coeff < 0) ~ 1,
+                        
+                        TRUE ~ 0))
+
+mean(gooddf$good)
+
+```
+
+## Robustness - auto.arima ma Tables of results
+```{r include=TRUE}
+
+h2 <- paste0("DSRIP slope or intercept was significant (", sprintf("%0.2f", pcut), " level) and measure was improving")
+
+h1 <- "For each measure, percent of PPS's for which"
+gooddf %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  formatRound(columns=c('pct_signif'), digits=1)
+
+
+h1 <- "For each PPS, percent of measures for which"
+gooddf %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  formatRound(columns=c('pct_signif'), digits=1)
+
+```
+
+
+## Robustness auto.arima ma Facet plots for the 5 measures that had the greatest percentage of PPS's for which DSRIP was significant and indicated improvement
+```{r automa_meas_regplot, fig.height=12, fig.width=12}
+# get the measures we want
+mlist <- gooddf %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif)
+
+f <- function(meas) {
+  p <- ppsdf %>%
+  filter(MSR_RESULT_ID == meas) %>%
+  left_join(gooddf %>%
+              select(PPS_ID, MSR_RESULT_ID, good)) %>%
+  mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
+         my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
+         good=factor(good)) %>%
+  arrange(PPS_ID, time) %>%
+  ggplot(aes(time, MSR_RESULT, colour=good)) +
+  scale_colour_manual(values=c("black", "orange")) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+  scale_x_continuous(breaks=brks) +
+  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+  theme_bw() +
+  facet_wrap(~idname, ncol=5, scales = "free") +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
+  ggtitle(paste0(meas, ": ", msr_name(meas)),
+          subtitle=paste0("Improvement requires ", msr_improve(meas), ".",
+                          " PPS's with significant DSRIP effect (slope or intercept) at ",
+                          sprintf("%.2f", pcut),
+                          " level are orange.",
+                          " MY4 points marked in pink."))
+ p
+}
+
+brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+
+for(meas in mlist$MSR_RESULT_ID[1:5]){
+  p <- f(meas)
+  print(p)
+  ggsave(here::here("results", paste0(meas, "_automa_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
+}
+
+
+```
+
+
+## Robustness automa Facet plots for the 5 PPS's that had the greatest percentage of measures for which DSRIP was significant and indicated improvement
+```{r automa_pps_regplot, fig.height=12, fig.width=12}
+# get the PPSs we want
+plist <- gooddf %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
+  arrange(-pct_signif)
+
+# we can't take all measures for each top-5 pps -- there are too many measures -- for now, just use the significant ones
+
+g <- function(ppsid) {
+  gname <- ppsdf %>% filter(PPS_ID == ppsid) %>% filter(row_number()==1) %>% .$idname
+    
+  p <- ppsdf %>% 
+    filter(PPS_ID == ppsid) %>%
+    left_join(gooddf %>% select(PPS_ID, MSR_RESULT_ID, good)) %>%
+    filter(good==1) %>%
+    mutate(my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
+         good=factor(good),
+         mname=paste0(MSR_RESULT_ID, ": ", msr_name(MSR_RESULT_ID)) %>% str_wrap(35)) %>%
+    arrange(MSR_RESULT_ID, time) %>%
+    ggplot(aes(time, MSR_RESULT)) +
+    geom_line(colour="orange") +
+    geom_point(colour="orange") +
+    geom_line(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+    geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+    scale_x_continuous(breaks=brks) +
+    geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+    geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+    theme_bw() +
+    facet_wrap(~mname, ncol=4, scales = "free") +
+    theme(legend.position = "none") +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
+    ggtitle(gname,
+            subtitle=paste0("Selected measures with significant DSRIP effect (slope or intercept) at ", sprintf("%.2f", pcut),
+                            " level. MY4 points marked in pink."))
+ p
+}
+
+brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+
+sw <- which(plist$PPS_ID==99)
+
+for(ppsid in plist$PPS_ID[unique(c(1:5, sw))]){
+  p <- g(ppsid)
+  print(p)
+  ggsave(here::here("results", paste0("pps_", ppsid, "_automa_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
+}
+
+# ppsid <- 99
+
+```
+
+
+# EXPERIMENTAL BELOW HERE
 ## outlier detection
-```{r}
+```{r eval=FALSE}
+
+
+```
+
+
+## structural shifts detection
+```{r eval=FALSE}
+
+
+```
+
+
+## outlier detection exploration
+```{r eval=FALSE}
 # library(DMwR)
 # remove "Species", which is a categorical column
 # iris2 <- iris[,1:4]
 # outlier.scores <- lofactor(iris2, k=5)
 # plot(density(outlier.scores))
-devtools::install_github("business-science/anomalize")
+
 
 
 dat.change <- c(12.013995263488, 11.8460207231808, 11.2845153487846, 11.7884417180764, 
@@ -753,7 +1324,7 @@ t3 %>%
 
 
 ## explore
-```{r}
+```{r eval=FALSE}
 msrid <- "SMCRES"
 msrid <- "SAARES"
 msrid <- "PPRRES"
