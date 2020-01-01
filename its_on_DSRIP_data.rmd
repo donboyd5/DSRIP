@@ -29,10 +29,6 @@ chris_source_dir <- paste0(team_dir, "CMA Files/dsrip/chris_workflow/data/") # n
 don_dir <- paste0(team_dir, "Don's Files/data/don/")
 chris_dir <- paste0(team_dir, "Don's Files/data/chris_frozen/")
 
-# significance pvalue for regressions -- define in only 1 place to avoid mistakes
-pcut <- .05
-# pcut <- .10
-
 ```
 
 
@@ -300,7 +296,7 @@ state <- ppsm2 %>%
 
 # add the state total and calc measures
 pps3 <- bind_rows(ppsm2, state) %>%
-  left_join(measures %>% select(MSR_RESULT_ID, UNIT_LBL, improve)) %>%
+  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, UNIT_LBL, improve)) %>%
   mutate(denom=case_when(UNIT_LBL == "Per 1,000 Newborns" ~ MSR_DEN / 1000,
                          UNIT_LBL == "Per 100 Members" ~ MSR_DEN / 100,
                          UNIT_LBL == "Per 100,000 Members" ~ MSR_DEN / 100e3,
@@ -469,26 +465,30 @@ Pacf(residuals(mod1))
 
 The regressions below are based on the arima method that takes into consideration moving-average dependent variables and moving-average error terms as discussed [here](https://github.com/donboyd5/DSRIP/blob/master/appendix_its_ma.rmd).
 
+Steps still to do:
 
-```{r its_reg, include=FALSE}
-# run the regressions and consolidate results
+*  assumption checks
+*  robustness checks
+*  one-sided ztests?
+*  automatic outlier identification
+*  automatic shift identification
+   
 
-# Note: this uses the arima method for moving-average dependent variables, as discussed here:
-#    https://github.com/donboyd5/DSRIP/blob/master/appendix_its_ma.rmd
+```{r}
+# ITS issues and assumptions
+# - linear trend or transormation to linear
+# - gradual introduction of intervention or multiple introductions
+# - external time-varying events
+# - autocorrelation
+# - changing characteristics of population over time
 
 
-# useful automation notes:
-# https://cran.r-project.org/web/packages/broom/vignettes/broom.html
-# https://cran.r-project.org/web/packages/broom/vignettes/broom_and_dplyr.html
-# https://drsimonj.svbtle.com/running-a-model-on-separate-groups
 
-# To do:
-#   automatic outlier identification
-#   automatic shift identification
-#   one-sided ztests?
-#   assumption checks
-#   robustness checks
+```
 
+
+```{r its_functions, include=FALSE}
+# functions we'll use throughout the its analysis
 ztest <- function(mod){
   ztest <- lmtest::coeftest(mod)
   ztdf <- ztest[, ] %>% 
@@ -501,9 +501,101 @@ ztest <- function(mod){
 }
 
 
+sig_type <- function(improve, shift.coeff, shift.pvalue, slope.coeff, slope.pvalue, pcut=.05) {
+  # type of significance
+  sig_type <- case_when(
+    (improve == "increase") &
+      (shift.coeff > 0) &
+      (shift.pvalue <= pcut) &
+      (slope.coeff > 0) &
+      (slope.pvalue <= pcut) ~ "both",
+      
+    (improve == "increase") &
+      (shift.coeff > 0) &
+      (shift.pvalue <= pcut) ~ "shift",
+    
+    (improve == "increase") &
+      (slope.coeff > 0) &
+      (slope.pvalue <= pcut) ~ "slope",
+    
+    (improve == "decrease") &
+      (shift.coeff < 0) &
+      (shift.pvalue <= pcut) &
+      (slope.coeff < 0) &
+      (slope.pvalue <= pcut) ~ "both",
+      
+    (improve == "decrease") &
+      (shift.coeff < 0) &
+      (shift.pvalue <= pcut) ~ "shift",
+    
+    (improve == "decrease") &
+      (slope.coeff < 0) &
+      (slope.pvalue <= pcut) ~ "slope",
+    
+    TRUE ~ "none")
+  
+  return(sig_type)
+}
+
+
+get_sig <- function(results_df, shift, slope, pvalue.cut) {
+  results_df <- results_df %>%
+    mutate(sig_type=sig_type(improve, 
+                             shift.coeff=.[[paste0(shift, ".coeff")]],
+                             shift.pvalue=.[[paste0(shift, ".pvalue")]],
+                             slope.coeff=.[[paste0(slope, ".coeff")]],
+                             slope.pvalue=.[[paste0(slope, ".pvalue")]],
+                             pcut=pvalue.cut),
+           good=ifelse(sig_type %in% c("both", "shift", "slope"), 1, 0))
+  return(results_df)
+}
+
+
+reg_results <- function(regressions) {
+  # pass detailed regression results, return a list with coeffs, pvalues and summary results
+  coeffs <- regressions %>% 
+    unnest(tidied) %>%
+    select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
+    pivot_wider(names_from = term, values_from = estimate)
+
+  pvalues <- regressions %>% 
+    unnest(ztest) %>%
+    select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
+    pivot_wider(names_from = term, values_from = p.value)
+  
+  results <- regressions_mafixed %>%
+    select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
+    left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
+    left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
+    left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
+
+  
+  reg_list <- list()
+  reg_list$coeffs <- coeffs
+  reg_list$pvalues <- pvalues
+  reg_list$results <- results
+  
+  return(reg_list)
+}
+
+```
+
+
+```{r its_data, include=FALSE}
+# run the regressions and consolidate results
+
+# Note: this uses the arima method for moving-average dependent variables, as discussed here:
+#    https://github.com/donboyd5/DSRIP/blob/master/appendix_its_ma.rmd
+
+
+# useful automation notes:
+# https://cran.r-project.org/web/packages/broom/vignettes/broom.html
+# https://cran.r-project.org/web/packages/broom/vignettes/broom_and_dplyr.html
+# https://drsimonj.svbtle.com/running-a-model-on-separate-groups
+
 # get a list of potential measures
 msr_use <- measures %>%
-  filter(npps==25, improve != "unknown") %>%
+  filter(improve != "unknown") %>% # npps==25, 
   filter(!str_detect(MSR_RESULT_ID, "PQI90"),
          !str_detect(MSR_RESULT_ID, "PQI92"))
 msr_use
@@ -518,76 +610,125 @@ obs_counts <- ppsdf %>%
 obs_counts %>% filter(n.notNA < n)
 obs_counts %>% filter(n == n.notNA, n==57) # ~ 500 regressions
 
-
 regdata <- ppsdf %>%
   right_join(obs_counts %>% filter(n == n.notNA, n==57))
 
+glimpse(regdata)
+nregs <- regdata %>%
+  group_by(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
+  summarise(n=n()) %>%
+  ungroup
+# a total of 605 regressions
+count(nregs, PPS_ID, PPS_NAME)
+count(nregs, MSR_RESULT_ID) %>% arrange(-n) # number of pps per measure
+
+```
+
+
+
+```{r its_arima_auto, include=FALSE}
 a <- proc.time()
-regressions <- regdata %>%
+xvars <- c("time_ma", "dsrip_ma", "interaction_ma")
+regressions_automa <- regdata %>%
   # additional filtering if desired:
   # filter(PPS_ID %in% (c(1:99)) %>%
   arrange(PPS_ID, MSR_RESULT_ID, time) %>%
-  nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
+  nest(data=-c(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME)) %>%
+    mutate(
+    fit = map(data, ~ auto.arima(.$MSR_RESULT,
+                                 xreg = as.matrix(.[, xvars]))),
+    tidied = map(fit, tidy),
+    glanced = map(fit, glance),
+    ztest=map(fit, ztest))
+b <- proc.time()
+b - a # 150 seconds for 605 regressions
+saveRDS(regressions_automa, here::here("results", "regressions_automa.rds"))
+
+regressions_automa <- readRDS(here::here("results", "regressions_automa.rds"))
+regressions_automa %>% ht
+
+# rlist <- reg_results(regressions_automa)
+# 
+# results <- rlist$results
+# glimpse(results)
+# results <- get_sig(results, shift="dsrip_ma", slope="interaction_ma", .05)
+# count(results, sig_type)
+# mean(results$good)
+
+```
+
+
+
+```{r its_arima_mafixed, include=FALSE}
+a <- proc.time()
+xvars <- c("time_ma", "dsrip_ma", "interaction_ma")
+regressions_mafixed <- regdata %>%
+  # additional filtering if desired:
+  # filter(PPS_ID %in% (c(1:99)) %>%
+  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
+  nest(data=-c(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME)) %>%
     mutate(
     fit = map(data, ~ arima(.$MSR_RESULT, 
-                            xreg = as.matrix(.[, c("time_ma", "dsrip_ma", "interaction_ma")]),
+                            xreg = as.matrix(.[, xvars]),
                             order=c(0, 0, 11),
                             fixed = c(rep(1, 11), NA, NA, NA, NA ))),
     tidied = map(fit, tidy),
     glanced = map(fit, glance),
     ztest=map(fit, ztest))
 b <- proc.time()
-b - a # 17 seconds for 516 regressions
+b - a # 20 seconds for 605 regressions
+saveRDS(regressions_mafixed, here::here("results", "regressions_mafixed.rds"))
 
-regressions %>% ht
-
-coeffs <- regressions %>% 
-  unnest(tidied) %>%
-  filter(str_sub(term, 1, 2) != "ma") %>%
-  select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
-  pivot_wider(names_from = term, values_from = estimate)
-
-pvalues <- regressions %>% 
-  unnest(ztest) %>%
-  select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
-  pivot_wider(names_from = term, values_from = p.value)
-
-results <- regressions %>%
-  select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
-  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
-  left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
-  left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
-glimpse(results)
-
-# now determine which regressions were significant and coefficients had the desired sign
-
-gooddf <- results %>%
-  mutate(good=case_when((improve == "increase") &
-                          (dsrip_ma.pvalue <= pcut) &
-                          (dsrip_ma.coeff > 0) ~ 1,
-                        
-                        (improve == "increase") &
-                          (interaction_ma.pvalue <= pcut) &
-                          (interaction_ma.coeff > 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (dsrip_ma.pvalue <= pcut) & 
-                          (dsrip_ma.coeff < 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (interaction_ma.pvalue <= pcut) &
-                          (interaction_ma.coeff < 0) ~ 1,
-                        
-                        TRUE ~ 0))
-# mean(gooddf$good)
+regressions_mafixed <- readRDS(here::here("results", "regressions_mafixed.rds"))
+regressions_mafixed %>% ht
 
 ```
 
+
 ## Summary of results
+```{r include=FALSE}
+regressions <- readRDS(here::here("results", "regressions_automa.rds"))
+glimpse(regressions)
 
-This program ran a total of `r nrow(gooddf)` regressions, including `r length(unique(gooddf$MSR_RESULT_ID))` measures, `r length(setdiff(unique(gooddf$PPS_ID), 1))` PPS's, and the statewide weighted average. I only included measures that were available for all 25 PPS's, and excluded any combinations of measures and PPS's for which there were one or more missing observations.
+rlist <- reg_results(regressions)
 
-Overall, DSRIP had a significant effect in `r sprintf("%2.1f", mean(gooddf$good) * 100)`% of these regressions. I considered the DSRIP effect significant if the DSRIP intercept or DSRIP slope or both were significantly different from 0 at the `r sprintf("%0.2f", pcut)` level and the relevant DSRIP coefficient(s) had the sign needed for improvement in the measure.
+results <- rlist$results
+glimpse(results)
+
+# significance pvalue for regressions -- define in only 1 place to avoid mistakes
+pcut <- .01
+# pcut <- .05
+# pcut <- .10
+
+results <- get_sig(results, shift="dsrip_ma", slope="interaction_ma", pvalue.cut=pcut)
+count(results, sig_type)
+mean(results$good)
+
+# count the number of regressions by number of pps's involved
+nregs <- results %>%
+  group_by(MSR_RESULT_ID) %>%
+  summarise(n=n()) %>%
+  group_by(n) %>%
+  summarise(nregressions=sum(n)) %>%
+  select(npps=n, nregressions) %>% 
+  arrange(-npps)
+
+nregs
+
+```
+
+
+
+This program ran a total of `r nrow(results)` regressions, including `r length(unique(results$MSR_RESULT_ID))` measures, `r length(setdiff(unique(results$PPS_ID), 1))` PPS's, and the statewide weighted average. I only included combinations of measures and PPS's for which there were no missing observations.
+
+Here is a table of the number of regressions by the number of PPS's included (counting the statewide average as a PPS):
+
+```{r results='asis'}
+nregs %>% janitor::adorn_totals() %>% kable()
+```
+
+
+Overall, DSRIP had a significant effect in `r sprintf("%2.1f", mean(results$good) * 100)`% of these regressions. I considered the DSRIP effect significant if the DSRIP intercept or DSRIP slope or both were significantly different from 0 at the `r sprintf("%0.2f", pcut)` level and the relevant DSRIP coefficient(s) had the appropriate sign for improvement in the measure.
 
 
 ## Tables of results
@@ -596,7 +737,7 @@ Overall, DSRIP had a significant effect in `r sprintf("%2.1f", mean(gooddf$good)
 h2 <- paste0("DSRIP slope or intercept was significant (", sprintf("%0.2f", pcut), " level) and measure was improving")
 
 h1 <- "For each measure, percent of PPS's for which"
-gooddf %>%
+results %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
   summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
   arrange(-pct_signif) %>%
@@ -605,7 +746,7 @@ gooddf %>%
 
 
 h1 <- "For each PPS, percent of measures for which"
-gooddf %>%
+results %>%
   group_by(PPS_ID, PPS_NAME) %>%
   summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
   arrange(-pct_signif) %>%
@@ -619,22 +760,30 @@ gooddf %>%
 ## Facet plots for the 5 measures that had the greatest percentage of PPS's for which DSRIP was significant and indicated improvement
 ```{r meas_regplot, fig.height=12, fig.width=12}
 # get the measures we want
-mlist <- gooddf %>%
+mlist <- results %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
   summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
   arrange(-pct_signif)
 
 f <- function(meas) {
-  p <- ppsdf %>%
-  filter(MSR_RESULT_ID == meas) %>%
-  left_join(gooddf %>%
-              select(PPS_ID, MSR_RESULT_ID, good)) %>%
-  mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
-         my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
-         good=factor(good)) %>%
-  arrange(PPS_ID, time) %>%
+  pdata <- ppsdf %>%
+    filter(MSR_RESULT_ID == meas) %>%
+    left_join(results %>%
+                select(PPS_ID, MSR_RESULT_ID, good) %>%
+                mutate(good=factor(good))) %>%
+    mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
+           my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer) %>%
+    arrange(PPS_ID, time)
+  npanels <- length(unique(pdata$PPS_ID))
+  ncolumns <- case_when(npanels <= 2 ~ 1,
+                        npanels %in% 3:8 ~ 2,
+                        npanels %in% 9:15 ~ 3,
+                        npanels %in% 16:20 ~ 4,
+                        TRUE ~ 5)
+  
+  p <- pdata %>%
   ggplot(aes(time, MSR_RESULT, colour=good)) +
-  scale_colour_manual(values=c("black", "orange")) +
+  scale_colour_manual(values=c("black", "orange"), drop=FALSE) +
   geom_line() +
   geom_point() +
   geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
@@ -642,7 +791,7 @@ f <- function(meas) {
   geom_vline(xintercept = 1, colour="blue", linetype="solid") +
   geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
   theme_bw() +
-  facet_wrap(~idname, ncol=5, scales = "free") +
+  facet_wrap(~idname, ncol=ncolumns, scales = "free") +
   theme(legend.position = "none") +
   theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
   ggtitle(paste0(meas, ": ", msr_name(meas)),
@@ -659,9 +808,11 @@ brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
 for(meas in mlist$MSR_RESULT_ID[1:5]){
   p <- f(meas)
   print(p)
-  ggsave(here::here("results", paste0(meas, "_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
+  ggsave(here::here("results", paste0(meas, "_p", pcut, "_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
 }
 
+# look at PDI14RES for 52??? why not signif??
+# results %>% filter(PPS_ID==52, MSR_RESULT_ID=="PDI14RES") %>% glimpse  # it is at 5%
 
 ```
 
@@ -717,307 +868,6 @@ for(ppsid in plist$PPS_ID[1:5]){
 
 ```
 
-
-
-
-## Robustness check auto.arima
-
-```{r reg_auto}
-
-# auto.arima(df$MSR_RESULT, xreg=xvars_ma)
-a <- proc.time()
-regressions_auto <- regdata %>%
-  # additional filtering if desired:
-  # filter(PPS_ID %in% c(99)) %>% # , MSR_RESULT_ID %in% "CAPC12MRES"
-  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
-  nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
-    mutate(
-    fit = map(data, ~ auto.arima(.$MSR_RESULT, 
-                            xreg = as.matrix(.[, c("time", "dsrip", "interaction")]))),
-    tidied = map(fit, tidy),
-    glanced = map(fit, glance),
-    ztest=map(fit, ztest))
-b <- proc.time()
-b - a # about 2+ mins for 516 regressions
-saveRDS(regressions_auto, here::here("results", "regressions_auto.rds"))
-
-regressions_auto %>% ht
-
-coeffs <- regressions_auto %>% 
-  unnest(tidied) %>%
-  filter(str_sub(term, 1, 2) != "ma") %>%
-  select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
-  pivot_wider(names_from = term, values_from = estimate)
-
-pvalues <- regressions_auto %>% 
-  unnest(ztest) %>%
-  select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
-  pivot_wider(names_from = term, values_from = p.value)
-
-results <- regressions_auto %>%
-  select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
-  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
-  left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
-  left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
-glimpse(results)
-
-# now determine which regressions were significant and coefficients had the desired sign
-
-gooddf <- results %>%
-  mutate(good=case_when((improve == "increase") &
-                          (dsrip.pvalue <= pcut) &
-                          (dsrip.coeff > 0) ~ 1,
-                        
-                        (improve == "increase") &
-                          (interaction.pvalue <= pcut) &
-                          (interaction.coeff > 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (dsrip.pvalue <= pcut) & 
-                          (dsrip.coeff < 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (interaction.pvalue <= pcut) &
-                          (interaction.coeff < 0) ~ 1,
-                        
-                        TRUE ~ 0))
-mean(gooddf$good)
-
-```
-
-## Robustness - auto.arima Tables of results
-```{r include=TRUE}
-
-h2 <- paste0("DSRIP slope or intercept was significant (", sprintf("%0.2f", pcut), " level) and measure was improving")
-
-h1 <- "For each measure, percent of PPS's for which"
-gooddf %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
-  arrange(-pct_signif) %>%
-  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
-  formatRound(columns=c('pct_signif'), digits=1)
-
-
-h1 <- "For each PPS, percent of measures for which"
-gooddf %>%
-  group_by(PPS_ID, PPS_NAME) %>%
-  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
-  arrange(-pct_signif) %>%
-  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
-  formatRound(columns=c('pct_signif'), digits=1)
-
-```
-
-
-
-
-## Robustness check auto.arima ma
-
-```{r reg_automa}
-
-# auto.arima(df$MSR_RESULT, xreg=xvars_ma)
-a <- proc.time()
-regressions_automa <- regdata %>%
-  # additional filtering if desired:
-  # filter(PPS_ID %in% c(99)) %>% # , MSR_RESULT_ID %in% "CAPC12MRES"
-  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
-  nest(data=-c(MSR_RESULT_ID, PPS_ID, PPS_NAME)) %>%
-    mutate(
-    fit = map(data, ~ auto.arima(.$MSR_RESULT, 
-                            xreg = as.matrix(.[, c("time_ma", "dsrip_ma", "interaction_ma")]))),
-    tidied = map(fit, tidy),
-    glanced = map(fit, glance),
-    ztest=map(fit, ztest))
-b <- proc.time()
-b - a # about 2+ mins for 516 regressions
-saveRDS(regressions_automa, here::here("results", "regressions_automa.rds"))
-
-regressions_automa %>% ht
-
-coeffs <- regressions_automa %>% 
-  unnest(tidied) %>%
-  filter(str_sub(term, 1, 2) != "ma") %>%
-  select(PPS_ID, MSR_RESULT_ID, term, estimate) %>%
-  pivot_wider(names_from = term, values_from = estimate)
-
-pvalues <- regressions_automa %>% 
-  unnest(ztest) %>%
-  select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
-  pivot_wider(names_from = term, values_from = p.value)
-
-results <- regressions_automa %>%
-  select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
-  left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
-  left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
-  left_join(pvalues, by = c("PPS_ID", "MSR_RESULT_ID"), suffix = c(".coeff", ".pvalue"))
-glimpse(results)
-
-# now determine which regressions were significant and coefficients had the desired sign
-
-gooddf <- results %>%
-  mutate(good=case_when((improve == "increase") &
-                          (dsrip_ma.pvalue <= pcut) &
-                          (dsrip_ma.coeff > 0) ~ 1,
-                        
-                        (improve == "increase") &
-                          (interaction_ma.pvalue <= pcut) &
-                          (interaction_ma.coeff > 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (dsrip_ma.pvalue <= pcut) & 
-                          (dsrip_ma.coeff < 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (interaction_ma.pvalue <= pcut) &
-                          (interaction_ma.coeff < 0) ~ 1,
-                        
-                        TRUE ~ 0))
-
-# alternative definition of good -- slope only
-gooddf <- results %>%
-  mutate(good=case_when(
-                        (improve == "increase") &
-                          (interaction_ma.pvalue <= pcut) &
-                          (interaction_ma.coeff > 0) ~ 1,
-                        
-                        (improve == "decrease") &
-                          (interaction_ma.pvalue <= pcut) &
-                          (interaction_ma.coeff < 0) ~ 1,
-                        
-                        TRUE ~ 0))
-
-mean(gooddf$good)
-
-```
-
-## Robustness - auto.arima ma Tables of results
-```{r include=TRUE}
-
-h2 <- paste0("DSRIP slope or intercept was significant (", sprintf("%0.2f", pcut), " level) and measure was improving")
-
-h1 <- "For each measure, percent of PPS's for which"
-gooddf %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
-  arrange(-pct_signif) %>%
-  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
-  formatRound(columns=c('pct_signif'), digits=1)
-
-
-h1 <- "For each PPS, percent of measures for which"
-gooddf %>%
-  group_by(PPS_ID, PPS_NAME) %>%
-  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
-  arrange(-pct_signif) %>%
-  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
-  formatRound(columns=c('pct_signif'), digits=1)
-
-```
-
-
-## Robustness auto.arima ma Facet plots for the 5 measures that had the greatest percentage of PPS's for which DSRIP was significant and indicated improvement
-```{r automa_meas_regplot, fig.height=12, fig.width=12}
-# get the measures we want
-mlist <- gooddf %>%
-  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
-  arrange(-pct_signif)
-
-f <- function(meas) {
-  p <- ppsdf %>%
-  filter(MSR_RESULT_ID == meas) %>%
-  left_join(gooddf %>%
-              select(PPS_ID, MSR_RESULT_ID, good)) %>%
-  mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
-         my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
-         good=factor(good)) %>%
-  arrange(PPS_ID, time) %>%
-  ggplot(aes(time, MSR_RESULT, colour=good)) +
-  scale_colour_manual(values=c("black", "orange")) +
-  geom_line() +
-  geom_point() +
-  geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
-  scale_x_continuous(breaks=brks) +
-  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
-  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
-  theme_bw() +
-  facet_wrap(~idname, ncol=5, scales = "free") +
-  theme(legend.position = "none") +
-  theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
-  ggtitle(paste0(meas, ": ", msr_name(meas)),
-          subtitle=paste0("Improvement requires ", msr_improve(meas), ".",
-                          " PPS's with significant DSRIP effect (slope or intercept) at ",
-                          sprintf("%.2f", pcut),
-                          " level are orange.",
-                          " MY4 points marked in pink."))
- p
-}
-
-brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
-
-for(meas in mlist$MSR_RESULT_ID[1:5]){
-  p <- f(meas)
-  print(p)
-  ggsave(here::here("results", paste0(meas, "_automa_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
-}
-
-
-```
-
-
-## Robustness automa Facet plots for the 5 PPS's that had the greatest percentage of measures for which DSRIP was significant and indicated improvement
-```{r automa_pps_regplot, fig.height=12, fig.width=12}
-# get the PPSs we want
-plist <- gooddf %>%
-  group_by(PPS_ID, PPS_NAME) %>%
-  summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
-  arrange(-pct_signif)
-
-# we can't take all measures for each top-5 pps -- there are too many measures -- for now, just use the significant ones
-
-g <- function(ppsid) {
-  gname <- ppsdf %>% filter(PPS_ID == ppsid) %>% filter(row_number()==1) %>% .$idname
-    
-  p <- ppsdf %>% 
-    filter(PPS_ID == ppsid) %>%
-    left_join(gooddf %>% select(PPS_ID, MSR_RESULT_ID, good)) %>%
-    filter(good==1) %>%
-    mutate(my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
-         good=factor(good),
-         mname=paste0(MSR_RESULT_ID, ": ", msr_name(MSR_RESULT_ID)) %>% str_wrap(35)) %>%
-    arrange(MSR_RESULT_ID, time) %>%
-    ggplot(aes(time, MSR_RESULT)) +
-    geom_line(colour="orange") +
-    geom_point(colour="orange") +
-    geom_line(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
-    geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
-    scale_x_continuous(breaks=brks) +
-    geom_vline(xintercept = 1, colour="blue", linetype="solid") +
-    geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
-    theme_bw() +
-    facet_wrap(~mname, ncol=4, scales = "free") +
-    theme(legend.position = "none") +
-    theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
-    ggtitle(gname,
-            subtitle=paste0("Selected measures with significant DSRIP effect (slope or intercept) at ", sprintf("%.2f", pcut),
-                            " level. MY4 points marked in pink."))
- p
-}
-
-brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
-
-sw <- which(plist$PPS_ID==99)
-
-for(ppsid in plist$PPS_ID[unique(c(1:5, sw))]){
-  p <- g(ppsid)
-  print(p)
-  ggsave(here::here("results", paste0("pps_", ppsid, "_automa_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
-}
-
-# ppsid <- 99
-
-```
 
 
 # EXPERIMENTAL BELOW HERE
