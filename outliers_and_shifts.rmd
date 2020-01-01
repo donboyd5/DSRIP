@@ -1,0 +1,465 @@
+---
+title: 'Automated outlier and structural shift detection'
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook:
+    df_print: paged
+    toc: yes
+    toc_depth: 5
+always_allow_html: yes    
+    
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+# Setup code - run all of these chunks
+<!-- setup chunk -->
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r system_specific_values, include=FALSE}
+# ddir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/chris_workflow/data/"
+team_dir <- "C:/Users/donbo/Dropbox/DSRIP TSA_CA Team Info/"
+
+chris_source_dir <- paste0(team_dir, "CMA Files/dsrip/chris_workflow/data/") # not used now
+
+don_dir <- paste0(team_dir, "Don's Files/data/don/")
+chris_dir <- paste0(team_dir, "Don's Files/data/chris_frozen/")
+
+```
+
+
+
+```{r libraries, include=FALSE}
+library("magrittr")
+library("plyr") # needed for ldply; must be loaded BEFORE dplyr
+library("tidyverse")
+options(tibble.print_max = 60, tibble.print_min = 60) # if more than 60 rows, print 60 - enough for states
+# ggplot2 tibble tidyr readr purrr dplyr stringr forcats
+
+library("scales")
+library("hms") # hms, for times
+library("lubridate") # lubridate, for date/times
+library("vctrs")
+
+library("grDevices")
+library("knitr")
+library("kableExtra")
+
+library("btools")
+
+library("DT")
+
+library("zoo") # for rollapply
+
+library("broom")
+library("forecast") # for auto.arima
+library("lmtest")
+library("tsoutliers")
+
+# devtools::install_github("business-science/anomalize")
+library("anomalize")
+
+```
+
+
+
+
+```{r functions, include=FALSE}
+ns <- function(df) {names(df) %>% sort}
+
+ma <- function(x, period) {
+  # create trailing moving average of x of length period
+  zoo::rollapply(x, period, function(x) mean(x, na.rm=TRUE), fill=NA, align="right")
+}
+
+se <- function(model) {sqrt(diag(vcov(model)))}
+
+msr_name <- function(msr_id, measures_df=measures) {
+  # return the measure name MSR_RESULT_NAME for a given measure id MSR_RESULT_ID
+  # requires as input a dataframe that has both MSR_RESULT_ID and MSR_RESULT_NAME
+  tibble(MSR_RESULT_ID=msr_id) %>%
+    left_join(measures_df) %>%
+    .$MSR_RESULT_NAME
+}
+
+msr_improve <- function(msr_id, measures_df=measures) {
+  # return the measure improve direction for a given measure id MSR_RESULT_ID
+  # requires as input a dataframe that has both MSR_RESULT_ID and MSR_RESULT_NAME
+  tibble(MSR_RESULT_ID=msr_id) %>%
+    left_join(measures_df) %>%
+    .$improve
+}
+
+pps_wrap <- function(PPS_ID, PPS_NAME, maxlen=100, wrap=25) {
+  name <- str_sub(PPS_NAME, 1, maxlen)
+  paste0(str_pad(PPS_ID, 2, pad="0"), ": ", name) %>% # zero-pad for better sorting
+    str_wrap(wrap)
+}
+
+
+```
+
+
+# START OF ANALYSIS -- with combined PPS/Statewide data
+```{r getdata, include=FALSE}
+ppsdf <- readRDS(paste0(don_dir, "ppsall_ma.rds"))
+measures <- readRDS(paste0(don_dir, "measures.rds"))
+measures
+
+```
+
+
+
+
+# EXPERIMENTAL BELOW HERE
+## outlier detection
+```{r eval=FALSE}
+
+
+```
+
+
+## structural shifts detection
+```{r eval=FALSE}
+
+
+```
+
+
+## outlier detection exploration
+```{r eval=FALSE}
+# library(DMwR)
+# remove "Species", which is a categorical column
+# iris2 <- iris[,1:4]
+# outlier.scores <- lofactor(iris2, k=5)
+# plot(density(outlier.scores))
+
+
+
+dat.change <- c(12.013995263488, 11.8460207231808, 11.2845153487846, 11.7884417180764, 
+11.6865425802022, 11.4703118125303, 11.4677576899063, 11.0227199625084, 
+11.274775836817, 11.03073498338, 10.7771805591742, 10.7383206158923, 
+10.5847230134625, 10.2479315651441, 10.4196381241735, 10.467607842288, 
+10.3682422713283, 9.7834431752935, 9.76649842404295, 9.78257968297228, 
+9.87817694914062, 9.3449034905713, 9.56400153361727, 9.78120084558148, 
+9.3445162813738, 9.36767436354887, 9.12070987223648, 9.21909859069157, 
+8.85136359917466, 8.8814423003979, 8.61830163359642, 8.44796977628488, 
+8.06957847272046, 8.37999165387824, 7.98213210294954, 8.21977468333673, 
+7.683960439316, 7.73213584532496, 7.98956476021092, 7.83036046746187, 
+7.64496198988985, 4.49693528397253, 6.3459274845112, 5.86993447552116, 
+4.58301192892403, 5.63419551523625, 6.67847511602895, 7.2005344054883, 
+5.54970477623895, 6.00011922569104, 6.882667104467, 4.74057284230894, 
+6.2140437333397, 6.18511450451019, 5.83973575417525, 6.57271194428385, 
+5.36261938326723, 5.48948831338016, 4.93968645996861, 4.52598133247377, 
+4.56372558828803, 5.74515428123725, 5.45931581984165, 5.58701112949141, 
+6.00585679276365, 5.41639695946931, 4.55361875158434, 6.23720558202826, 
+6.19433060301002, 5.82989415940829, 5.69321394985076, 5.53585871082265, 
+5.42684812413063, 5.80887522466946, 5.56660158483312, 5.7284521523444, 
+5.25425775891636, 5.4227645808924, 5.34778016248718, 5.07084809927736, 
+5.324066161355, 5.03526881241705, 5.17387528516352, 5.29864121433813, 
+5.36894461582415, 5.07436929444317, 4.80619983525015, 4.42858947882894, 
+4.33623051506001, 4.33481791951228, 4.38041031792294, 3.90012900415342, 
+4.04262777674943, 4.34383842876647, 4.36984816425014, 4.11641092254315, 
+3.83985887104645, 3.81813419810962, 3.85174630901311, 3.66434598962311, 
+3.4281724860426, 2.99726515704766, 2.96694634792395, 2.94003031547181, 
+3.20892607367132, 3.03980832743458, 2.85952185077593, 2.70595278908964, 
+2.50931109659839, 2.1912274016859)
+dat.ts <- ts(dat.change, frequency=1)
+data.ts.outliers <- tso(dat.ts)
+data.ts.outliers
+plot(data.ts.outliers)
+str(data.ts.outliers)
+
+
+# 22 PPRRES
+tmp <- df1 %>%
+  filter(PPS_ID==22, MSR_RESULT_ID=="PPRRES") %>% # 22 44
+  mutate(rn=row_number())
+plot(tmp$MSR_RESULT)
+
+
+library(DMwR)
+vars <- c("PPS_ID", "PPS_NAME", "rn", "PER_END_DT", "time", "MSR_RESULT_ID", "MSR_RESULT")
+
+kval <- 5
+t2 <- df1 %>%
+  filter(PPS_ID %in% c(22, 43, 44), MSR_RESULT_ID=="PPRRES") %>% # 22 44
+  arrange(MSR_RESULT_ID, PPS_ID, PPS_NAME, PER_END_DT) %>%
+  group_by(MSR_RESULT_ID, PPS_ID, PPS_NAME) %>%
+  mutate(rn=row_number()) %>%
+  select(vars) %>%
+  mutate(change_back=ifelse(rn==min(rn), 0, MSR_RESULT - lag(MSR_RESULT)),
+         change_fwd=ifelse(rn==max(rn), 0, lead(MSR_RESULT) - MSR_RESULT),
+         lofb=lofactor(change_back, k=kval),
+         loff=lofactor(change_fwd, k=kval),
+         outlier=(lofb > 2 & loff > 2)) %>%
+  time_decompose(MSR_RESULT, merge = TRUE) %>%
+  anomalize(remainder) %>%
+  time_recompose() %>%
+  ungroup
+t2
+t2 %>% filter(PPS_ID==44)
+
+(brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3)))
+lofcut <- 1.75
+p <- t2 %>%
+  ggplot(aes(time, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  # geom_point(aes(time, MSR_RESULT), colour="red", size=1.5, data=. %>% filter(outlier == TRUE)) +
+  geom_point(aes(time, MSR_RESULT), colour="blue", size=2, data=. %>% 
+               filter((abs(lofb) > lofcut & abs(loff) > lofcut) & (anomaly != "Yes"))) +
+  geom_point(aes(time, MSR_RESULT), colour="yellow", size=2, data=. %>% 
+               filter(!(abs(lofb) > lofcut & abs(loff) > lofcut) & (anomaly == "Yes"))) +
+  geom_point(aes(time, MSR_RESULT), colour="green", size=3, data=. %>% 
+               filter((abs(lofb) > lofcut & abs(loff) > lofcut) & (anomaly == "Yes"))) +
+  scale_x_continuous(breaks=brks) +
+  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+  theme_bw() +
+  facet_wrap(~PPS_ID + PPS_NAME, ncol=5, scales = "free")
+p
+
+     
+vars <- c("PPS_ID", "PPS_NAME", "rn", "PER_END_DT", "time", "MSR_RESULT_ID", "MSR_RESULT")
+tmp2 <- tmp %>%
+  select(vars) %>%
+  mutate(change=MSR_RESULT - lag(MSR_RESULT),
+         change=ifelse(rn==1, 0, change),
+         change_ratio= change / sd(change),
+         level_ratio=(MSR_RESULT - mean(MSR_RESULT)) / sd(MSR_RESULT))
+
+t2 <- ts(tmp$MSR_RESULT, frequency=1)
+system.time(t2o <- tso(t2, logfile="tso_auto_out.out",))
+t2o
+str(t2o)
+t2o$outliers %>% as_tibble()
+
+
+system.time(t2a <- tso(t2, 
+                       types = c("TC"), # c("AO", "LS", "TC", "IO"),
+                       cval = 3.5, # lower is more sensitive to AO outliers
+                       delta = 0.1,
+                       maxit = 1,
+                       maxit.iloop = 6, maxit.oloop = 6,
+                       # logfile="tso_out.out",
+                       tsmethod="arima", 
+                       args.tsmethod = list(order=c(1, 1, 0))))
+
+
+t2a <- tso(t2, types = c("TC"), # c("AO", "LS", "TC"),
+           discard.method = "bottom-up", tsmethod = "auto.arima",
+           args.tsmethod = list(allowdrift = TRUE, ic = "bic"))
+
+
+t2a
+outdf <- t2a$outliers %>% as_tibble() %>% rename(rn=time) %>% left_join(tmp) %>% select(rn, type, coefhat, MSR_RESULT)
+tmp %>%
+  ggplot(aes(rn, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(rn, MSR_RESULT), colour="red", size=3, data=outdf %>% filter(type=="AO")) +
+  geom_point(aes(rn, MSR_RESULT), colour="green", size=3, data=outdf %>% filter(type=="LS")) +
+  geom_point(aes(rn, MSR_RESULT), colour="blue", size=3, data=outdf %>% filter(type=="TC")) +
+  geom_point(aes(rn, MSR_RESULT), colour="orange", size=3, data=outdf %>% filter(type=="IO")) +
+  scale_x_continuous(breaks=seq(0, 60, 5)) +
+  theme_bw()
+
+
+
+t2a <- tmp %>% 
+  select(rn, PER_END_DT, MSR_RESULT) %>%
+  time_decompose(MSR_RESULT, merge = TRUE) %>%
+  anomalize(remainder) %>%
+  time_recompose()
+outdf <- t2a$outliers %>% as_tibble() %>% rename(rn=time) %>% left_join(tmp) %>% select(rn, type, coefhat, MSR_RESULT)
+t2a %>%
+  ggplot(aes(rn, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(rn, MSR_RESULT), colour="red", size=3, data=. %>% filter(anomaly == "Yes")) +
+  scale_x_continuous(breaks=seq(0, 60, 5)) +
+  theme_bw()
+
+
+tmp2 <- df1 %>%
+  filter(MSR_RESULT_ID=="PPRRES") %>%
+  select(PPS_ID, PPS_NAME, PER_END_DT, time, MSR_RESULT) %>%
+  group_by(PPS_ID, PPS_NAME) %>%
+  arrange(PER_END_DT) %>%
+  time_decompose(MSR_RESULT, merge = TRUE) %>%
+  anomalize(remainder,
+            alpha = .025, # .05 default, smaller makes it harder to be an outlier
+            max_anoms = .05, # 0.2 default maximum proportion of obs that can be an anomaly
+            ) %>%
+  time_recompose() %>%
+  ungroup
+(brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3)))
+p <- tmp2 %>%
+  ggplot(aes(time, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(time, MSR_RESULT), colour="red", size=1.5, data=. %>% filter(anomaly == "Yes")) +
+  scale_x_continuous(breaks=brks) +
+  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+  theme_bw() +
+  facet_wrap(~PPS_ID + PPS_NAME, ncol=5, scales = "free")
+p
+
+library(strucchange)
+data("Nile")
+plot(Nile)
+
+bp.nile <- breakpoints(Nile ~ 1)
+summary(bp.nile)
+plot(bp.nile)
+
+## compute breakdates corresponding to the
+## breakpoints of minimum BIC segmentation
+breakdates(bp.nile)
+
+## confidence intervals
+ci.nile <- confint(bp.nile)
+breakdates(ci.nile)
+ci.nile
+
+plot(Nile)
+lines(ci.nile)
+
+
+d1 <- df1 %>%
+  filter(PPS_ID==23, MSR_RESULT_ID=="PPRRES") %>% # 22 44 43
+  mutate(rn=row_number())
+d1 %>% ggplot(aes(rn, MSR_RESULT)) + geom_line() + geom_point()
+bp <- breakpoints(d1$MSR_RESULT ~ 1, breaks=5)
+str(bp)
+d1 %>% ggplot(aes(rn, MSR_RESULT)) + 
+  geom_line() + 
+  geom_point() +
+  geom_vline(xintercept = bp$breakpoints)
+
+
+
+resNile2 <- tso(y = Nile, types = c("AO", "LS", "TC"),
+                discard.method = "bottom-up", tsmethod = "auto.arima",
+                args.tsmethod = list(allowdrift = FALSE, ic = "bic"))
+resNile2
+Nile
+
+
+
+system.time(t2a <- tso(t2, 
+                       tsmethod="arima", 
+                       args.tsmethod = list(order=c(0, 0, 11),
+                       fixed = c(rep(1, 11), NA))
+                       ))
+t2a
+
+arima(t2, order=c(0, 0, 11), fixed = c(rep(1, 11), NA))
+summary(arima(t2, order=c(1, 1, 0)))
+
+    # fit = map(data, ~ arima(.$MSR_RESULT, 
+    #                         xreg = as.matrix(.[, c("time_ma", "dsrip_ma", "interaction_ma")]),
+    #                         order=c(0, 0, 11),
+    #                         fixed = c(rep(1, 11), NA, NA, NA, NA ))),
+
+
+tmp %>%
+  ggplot(aes(rn, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(rn, MSR_RESULT), colour="red", size=2, data=tmp %>% filter(rn %in% c(44, 45, 49))) +
+  scale_x_continuous(breaks=seq(0, 60, 5))
+
+tmp2 %>%
+  ggplot(aes(time, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(time, MSR_RESULT), colour="red", size=2, data=tmp2 %>% filter(change_ratio > 2 | level_ratio > 2))
+
+# https://towardsdatascience.com/tidy-anomaly-detection-using-r-82a0c776d523
+library("anomalize")
+library(coindeskr) #bitcoin price extraction from coindesk
+btc <- get_historic_price(start = "2017-01-01")
+btc_ts <- btc %>% rownames_to_column() %>% as.tibble() %>% 
+  mutate(date = as.Date(rowname)) %>% select(-one_of('rowname'))
+ht(btc_ts)
+
+t3 <- btc_ts %>% 
+  time_decompose(Price, method = "stl", frequency = "auto", trend = "auto") %>%
+  anomalize(remainder, method = "gesd", alpha = 0.05, max_anoms = 0.2)
+ht(t3)
+
+t3 %>%
+  plot_anomaly_decomposition()
+
+t3 <- tmp %>% 
+  time_decompose(MSR_RESULT, method = "stl", frequency = "auto", trend = "auto") %>%
+  anomalize(remainder, method = "gesd", alpha = 0.05, max_anoms = 0.2)
+ht(t3)
+
+t3 %>%
+  plot_anomaly_decomposition()
+
+t3 %>%
+  left_join(tmp) %>%
+  ggplot(aes(time, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  geom_point(aes(time, MSR_RESULT), colour="red", size=2, data=. %>% filter(anomaly=="Yes"))
+
+
+```
+
+
+
+## explore
+```{r eval=FALSE}
+msrid <- "SMCRES"
+msrid <- "SAARES"
+msrid <- "PPRRES"
+
+(msrtitle <- paste0(msrid, ": ", ulabs$MSR_RESULT_NAME[ulabs$MSR_RESULT_ID==msrid]))
+(msrcalc <- ulabs$UNIT_LBL[ulabs$MSR_RESULT_ID==msrid])
+p <- ppsall %>%
+  filter(MSR_RESULT_ID==msrid) %>%
+  ggplot(aes(PER_END_DT, MSR_RESULT)) +
+  geom_line(colour="darkgreen") +
+  geom_point(colour="darkgreen") +
+  geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+  facet_wrap(~idname, scales = "free", ncol=6) +
+  ggtitle(paste0(msrtitle, "\n", paste0("Calculation: ", msrcalc)),
+          subtitle="Notes: (1) Vertical line marks DSRIP start, (2) Data are from Chris dropbox files")
+p
+ggsave(here::here("results", paste0(msrid, "_facet.png")), plot=p, width=10, height=8, scale=2)
+  
+# produce a bunch of plots
+# measure_facet_plots
+f <- function(msrid){
+  # CAUTION: this function assumes ulabs and ppsall data frames exist
+  msrtitle <- paste0(msrid, ": ", ulabs$MSR_RESULT_NAME[ulabs$MSR_RESULT_ID==msrid])
+  msrcalc <- ulabs$UNIT_LBL[ulabs$MSR_RESULT_ID==msrid]
+  p <- ppsall %>%
+    filter(MSR_RESULT_ID==msrid) %>%
+    ggplot(aes(PER_END_DT, MSR_RESULT)) +
+    geom_line(colour="darkgreen") +
+    geom_point(colour="darkgreen") +
+    geom_vline(xintercept=dsrip_start, linetype="dashed", colour="blue", size=1) +
+    facet_wrap(~idname, scales = "free", ncol=6) +
+    ggtitle(paste0(msrtitle, "\n", paste0("Calculation: ", msrcalc)),
+          subtitle="Notes: (1) Vertical line marks DSRIP start, (2) Data are from Chris dropbox files")
+  ggsave(here::here("results", "measure_facet_plots", paste0(msrid, "_facet.png")), plot=p, width=10, height=8, scale=2)
+  return(NULL)
+}
+
+l_ply(ulabs$MSR_RESULT_ID, f, .progress = "text")
+
+```
+
+
+
