@@ -33,13 +33,8 @@ chris_dir <- paste0(team_dir, "Don's Files/data/chris_frozen/")
 
 
 ```{r globals, include=FALSE}
-m_long <- "V_mapp_pps_msr_mo_long.csv"
-a_long <- "v_mapp_pps_msr_ann_long.csv"
-
-# ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
 
 dsrip_start <- as.Date("2015-07-01")
-
 ```
 
 
@@ -137,7 +132,16 @@ Create a file with information on each measure:
 - Units (how it is calculated)
 - Whether improvement requires an increase or decrease
 
-```{r ONETIME_metadata, eval=FALSE}
+```{r}
+m_long <- "V_mapp_pps_msr_mo_long.csv"
+a_long <- "v_mapp_pps_msr_ann_long.csv"
+
+# ppsnet_long <- "pps_net_df.csv" # looks like it could have useful data
+
+```
+
+
+```{r ONETIME_measures, eval=FALSE}
 # the rds file v_mapp_pps_msr_ann_long-CRTH9H2.rds appears to have a lot of useful metadata
 # there do not appear to be other files that are as close to raw data as this
 
@@ -246,6 +250,21 @@ ht(measures)
 ```
 
 
+```{r ONETIME_ppsnames}
+chrisdf <- readRDS(paste0(chris_dir, "v_mapp_pps_msr_ann_long-CRTH9H2.rds"))
+glimpse(chrisdf)
+# count(chrisdf, PPS_ID, PPS_NAME)
+
+ppsnames <- chrisdf %>% 
+  select(PPS_ID, PPS_NAME) %>% 
+  unique %>% 
+  mutate(idname=paste0(str_pad(PPS_ID, 2, side="left", "0"), " ", PPS_NAME))
+
+saveRDS(ppsnames, paste0(don_dir, "ppsnames.rds"))
+
+```
+
+
 ## Simple data checks and create a clean monthly file
 ```{r ONETIME_clean, eval=FALSE}
 # read as character to look for trouble
@@ -329,6 +348,7 @@ ym <- function(date){paste(year(date), month(date))}
 
 timedf <- tibble(PER_END_DT=end_dates) %>%
   mutate(rownum=row_number(),
+         my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
          time = rownum - rownum[which(ym(PER_END_DT) == ym(dsrip_start))] + 1,
          dsrip=ifelse(PER_END_DT >= dsrip_start, 1, 0),
          interaction=time * dsrip,
@@ -355,7 +375,7 @@ saveRDS(ppsall_ma, paste0(don_dir, "ppsall_ma.rds"))
 ```
 
 
-# START OF ANALYSIS -- with combined PPS/Statewide data
+# START OF ITS ANALYSIS -- with combined PPS/Statewide data
 ```{r getdata, include=FALSE}
 ppsdf <- readRDS(paste0(don_dir, "ppsall_ma.rds"))
 measures <- readRDS(paste0(don_dir, "measures.rds"))
@@ -402,60 +422,121 @@ xvars_ma <- as.matrix(df[, c("time_ma", "dsrip_ma", "interaction_ma")])
 
 
 # build from simple lm model to the model above
+# results below are for msrid <- "AMRRES", ppsnum <- 99
 # lm model, dsrip impact big and signif
+# se matches lmtest
 lm1 <- lm(MSR_RESULT ~ time + dsrip + interaction, data=df)
 summary(lm1)
 # Coefficients:
 #             Estimate Std. Error t value Pr(>|t|)    
-# (Intercept)  647.174     10.881  59.479  < 2e-16 ***
-# time          -2.167      1.539  -1.408    0.165    
-# dsrip        -53.790     12.607  -4.267 8.22e-05 ***
-# interaction          1.452      1.558   0.932    0.356 
+# (Intercept) 57.96999    0.36505 158.801  < 2e-16 ***
+# time        -0.21807    0.05163  -4.224 9.48e-05 ***
+# dsrip        1.29379    0.42296   3.059  0.00348 ** 
+# interaction  0.27899    0.05228   5.336 2.01e-06 ***
+lmtest::coeftest(lm1)
+# t test of coefficients:
+# 
+#              Estimate Std. Error  t value  Pr(>|t|)    
+# (Intercept) 57.969992   0.365047 158.8012 < 2.2e-16 ***
+# time        -0.218069   0.051626  -4.2241 9.477e-05 ***
+# dsrip        1.293793   0.422960   3.0589   0.00348 ** 
+# interaction  0.278986   0.052283   5.3360 2.013e-06 ***
 
 
-# same model using arima call, same results, dsrip impact big and signif
+# same model using arima call, same coefficients, dsrip impact big and signif
+# notice that se is not identical to lm! but it matches lmtest ztest
 mod1 <- arima(df$MSR_RESULT, xreg=xvars, order=c(0, 0, 0)) 
 summary(mod1)
 # Coefficients:
-#       intercept     time     dsrip   interaction
-#        647.1744  -2.1667  -53.7900  1.4524
-# s.e.    10.4920   1.4838   12.1565  1.5027
+#       intercept     time   dsrip  interaction
+#          57.970  -0.2181  1.2938       0.2790
+# s.e.      0.352   0.0498  0.4078       0.0504
+lmtest::coeftest(mod1)
+# z test of coefficients:
+#              Estimate Std. Error  z value  Pr(>|z|)    
+# intercept   57.969992   0.352006 164.6846 < 2.2e-16 ***
+# time        -0.218069   0.049781  -4.3805 1.184e-05 ***
+# dsrip        1.293793   0.407849   3.1722  0.001513 ** 
+# interaction  0.278986   0.050416   5.5337 3.135e-08 ***
 
-# add ar1, dsrip smaller and not signif
-mod1 <- arima(df$MSR_RESULT, xreg=xvars, order=c(1, 0, 0)) 
-summary(mod1)
-#          ar1  intercept     time     dsrip   interaction
-#       0.7649   628.1793  -4.0510  -23.1627  2.9181
-# s.e.  0.0866    16.2951   2.1741   14.3668  2.4234
+
+# add ar1, dsrip smaller and not signif; se matches lmtest z
+mod2 <- arima(df$MSR_RESULT, xreg=xvars, order=c(1, 0, 0)) 
+summary(mod2)
+# Coefficients:
+#          ar1  intercept     time   dsrip  interaction
+#       0.7931    58.7884  -0.1428  0.0886       0.2146
+# s.e.  0.0823     0.5683   0.0744  0.4711       0.0835
+lmtest::coeftest(mod2)
+# z test of coefficients:
+# 
+#              Estimate Std. Error  z value Pr(>|z|)    
+# ar1          0.793103   0.082287   9.6383  < 2e-16 ***
+# intercept   58.788423   0.568293 103.4473  < 2e-16 ***
+# time        -0.142795   0.074357  -1.9204  0.05481 .  
+# dsrip        0.088596   0.471078   0.1881  0.85082    
+# interaction  0.214614   0.083491   2.5705  0.01016 *  
 
 
 # ar1 with ma variables, dsrip impact bigger but not signif
-mod1 <- arima(df$MSR_RESULT, xreg=xvars_ma, order=c(1, 0, 0))
-summary(mod1)
+mod3 <- arima(df$MSR_RESULT, xreg=xvars_ma, order=c(1, 0, 0))
+summary(mod3)
 # Coefficients:
 #          ar1  intercept  time_ma  dsrip_ma  interaction_ma
-#       0.6810   620.1582  -3.3444  -50.8206    3.3376
-# s.e.  0.0953    20.7246   1.7342   27.4244    1.7452
+#       0.5448    56.7993  -0.2132    3.9887          0.2287
+# s.e.  0.1090     0.4804   0.0415    0.6390          0.0411
+lmtest::coeftest(mod3) # se's match
 
-# auto.arima of proper data ar1, ar2 large prob not significant
-mod1 <- auto.arima(df$MSR_RESULT, xreg=xvars_ma)
-summary(mod1)
+
+# auto.arima of proper data
+mod4 <- auto.arima(df$MSR_RESULT, xreg=xvars_ma)
+summary(mod4)
 # Coefficients:
-#          ar1      ar2  intercept  time_ma  dsrip_ma  interaction_ma
-#       0.8379  -0.2338   620.4940  -3.3059  -52.6447    3.4013
-# s.e.  0.1272   0.1295    18.2177   1.5831   24.2835    1.5628
+#          ar1  intercept  time_ma  dsrip_ma  interaction_ma
+#       0.5448    56.7993  -0.2132    3.9887          0.2287
+# s.e.  0.1090     0.4804   0.0415    0.6390          0.0411
+# sigma^2 estimated as 0.1694:  log likelihood=-27.84 AIC=67.68   AICc=69.36   BIC=79.94 
+lmtest::coeftest(mod4) # se's match
+# z test of coefficients:
+#                 Estimate Std. Error  z value  Pr(>|z|)    
+# ar1             0.544787   0.109044   4.9960 5.852e-07 ***
+# intercept      56.799306   0.480447 118.2218 < 2.2e-16 ***
+# time_ma        -0.213186   0.041493  -5.1379 2.778e-07 ***
+# dsrip_ma        3.988659   0.638996   6.2421 4.318e-10 ***
+# interaction_ma  0.228740   0.041136   5.5605 2.689e-08 ***
 
 # proper model ma11, neg but not signif
-mod1 <- arima(df$MSR_RESULT, xreg=xvars_ma, order=c(0, 0, 11), fixed = c(rep(1, 11), NA, NA, NA, NA ))
-summary(mod1)
+# se's match lmtest z test and lmtest t test where we specify df but note that p values are different!
+# MORE IMPORTANT: NOTE THAT se's on indep vars are MUCH larger than for mod4 -- why??
+mod5 <- arima(df$MSR_RESULT, xreg=xvars_ma, order=c(0, 0, 11), fixed = c(rep(1, 11), NA, NA, NA, NA ))
+summary(mod5)
 # Coefficients:
-#       intercept  time_ma  dsrip_ma  interaction_ma
-#       592.4594  -6.4147  -32.1812    7.0997
-# s.e.  77.9107   5.8765   98.9464    6.2526
+#       ma1  ma2  ma3  ma4  ma5  ma6  ma7  ma8  ma9  ma10  ma11  intercept  time_ma  dsrip_ma  interaction_ma
+#         1    1    1    1    1    1    1    1    1     1     1    57.5474  -0.1523    2.6807          0.1938
+# s.e.    0    0    0    0    0    0    0    0    0     0     0     2.0478   0.1545    2.6007          0.1643
+# sigma^2 estimated as 0.1731:  log likelihood = -41.65,  aic = 93.31
+lmtest::coeftest(mod5)
+# z test of coefficients:
+#                Estimate Std. Error z value Pr(>|z|)    
+# intercept      57.54741    2.04784 28.1016   <2e-16 ***
+# time_ma        -0.15234    0.15446 -0.9863   0.3240    
+# dsrip_ma        2.68067    2.60075  1.0307   0.3027    
+# interaction_ma  0.19384    0.16434  1.1794   0.2382    
+lmtest::coeftest(mod5, df=53)
+# t test of coefficients:
+#                Estimate Std. Error t value Pr(>|t|)    
+# intercept      57.54741    2.04784 28.1016   <2e-16 ***
+# time_ma        -0.15234    0.15446 -0.9863   0.3285    
+# dsrip_ma        2.68067    2.60075  1.0307   0.3073    
+# interaction_ma  0.19384    0.16434  1.1794   0.2435  
 
 
-Acf(residuals(mod1))
-Pacf(residuals(mod1))
+
+Acf(residuals(mod4))
+Pacf(residuals(mod4))
+
+Acf(residuals(mod5))
+Pacf(residuals(mod5))
 
 ```
 
@@ -467,34 +548,67 @@ The regressions below are based on the arima method that takes into consideratio
 Steps still to do:
 
 *  assumption checks
-*  robustness checks
+*  robustness checks - run lm equivalent
 *  one-sided ztests?
+*  slope-intercept graphs of coefficients
 *  automatic outlier identification
 *  automatic shift identification
    
 
-```{r}
-# ITS issues and assumptions
-# - linear trend or transormation to linear
-# - gradual introduction of intervention or multiple introductions
-# - external time-varying events
-# - autocorrelation
-# - changing characteristics of population over time
-
-
-
-```
-
-
 ```{r its_functions, include=FALSE}
 # functions we'll use throughout the its analysis
-ztest <- function(mod){
+
+# ztest <- function(mod){
+#   ztest <- lmtest::coeftest(mod)
+#   ztdf <- ztest[, ] %>% 
+#     as.data.frame() %>%
+#     setNames(c("estimate", "std.error", "z.value", "p.value")) %>%
+#     mutate(term=rownames(ztest)) %>%
+#     as_tibble() %>%
+#     select(term, everything())
+#   ztdf
+# }
+
+ztest <- function(mod, dgrf="nocalc"){
+  # calculate the z test statistic (essentially the t) and its p.value
+  # return a data frame
+  
+  # dgrf = c("nocalc", "calc")
+  
+  if(dgrf == "nocalc") {
+    ztest <- lmtest::coeftest(mod) 
+    } else {
+      # calculate degrees of freedom - we must do this 
+      # if some of the coefficients are restricted
+      nfree_vars <- nrow(mod$var.coef) # only the free (unrestricted) variables will be in here
+      dfreedom <- mod$nobs - nfree_vars
+      ztest <- lmtest::coeftest(mod, df=dfreedom)
+      }
+  
+  ztdf <- ztest[, ] %>% 
+    as.data.frame() %>%
+    setNames(c("estimate", "std.error", "z.value", "p.value")) %>%
+    mutate(term=rownames(ztest)) %>%
+    as_tibble() %>%
+    select(term, everything())
+  ztdf
+}
+
+ztest2 <- function(mod){
+  # direct calculation of t statistic
+  # calculate degrees of freedom - we must do this 
+  # if some of the coefficients are restricted
+  nfree_vars <- nrow(mod$var.coef) # only the free (unrestricted) variables will be in here
+  dfreedom <- mod$nobs - nfree_vars
+  
   ztest <- lmtest::coeftest(mod)
   ztdf <- ztest[, ] %>% 
     as.data.frame() %>%
     setNames(c("estimate", "std.error", "z.value", "p.value")) %>%
     mutate(term=rownames(ztest)) %>%
     as_tibble() %>%
+    mutate(degrees=dfreedom, 
+           p.value.calc=2*(1-pt(z.value, degrees))) %>%
     select(term, everything())
   ztdf
 }
@@ -562,7 +676,7 @@ reg_results <- function(regressions) {
     select(PPS_ID, MSR_RESULT_ID, term, p.value) %>%
     pivot_wider(names_from = term, values_from = p.value)
   
-  results <- regressions_mafixed %>%
+  results <- regressions %>%
     select(PPS_ID, PPS_NAME, MSR_RESULT_ID) %>%
     left_join(measures %>% select(MSR_RESULT_ID, MSR_RESULT_NAME, improve), by = "MSR_RESULT_ID") %>%
     left_join(coeffs, by = c("PPS_ID", "MSR_RESULT_ID")) %>%
@@ -638,7 +752,7 @@ regressions_automa <- regdata %>%
                                  xreg = as.matrix(.[, xvars]))),
     tidied = map(fit, tidy),
     glanced = map(fit, glance),
-    ztest=map(fit, ztest))
+    ztest=map(fit, ztest, dgrf="nocalc"))
 b <- proc.time()
 b - a # 150 seconds for 605 regressions
 saveRDS(regressions_automa, here::here("results", "regressions_automa.rds"))
@@ -650,7 +764,7 @@ regressions_automa %>% ht
 # 
 # results <- rlist$results
 # glimpse(results)
-# results <- get_sig(results, shift="dsrip_ma", slope="interaction_ma", .05)
+# results <- get_sig(results, shift="dsrip_ma", slope="interaction_ma", .01)
 # count(results, sig_type)
 # mean(results$good)
 
@@ -658,34 +772,11 @@ regressions_automa %>% ht
 
 
 
-```{r its_arima_mafixed, include=FALSE}
-a <- proc.time()
-xvars <- c("time_ma", "dsrip_ma", "interaction_ma")
-regressions_mafixed <- regdata %>%
-  # additional filtering if desired:
-  # filter(PPS_ID %in% (c(1:99)) %>%
-  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
-  nest(data=-c(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME)) %>%
-    mutate(
-    fit = map(data, ~ arima(.$MSR_RESULT, 
-                            xreg = as.matrix(.[, xvars]),
-                            order=c(0, 0, 11),
-                            fixed = c(rep(1, 11), NA, NA, NA, NA ))),
-    tidied = map(fit, tidy),
-    glanced = map(fit, glance),
-    ztest=map(fit, ztest))
-b <- proc.time()
-b - a # 20 seconds for 605 regressions
-saveRDS(regressions_mafixed, here::here("results", "regressions_mafixed.rds"))
-
-regressions_mafixed <- readRDS(here::here("results", "regressions_mafixed.rds"))
-regressions_mafixed %>% ht
-
-```
 
 
 # Summary of results
 ```{r include=FALSE}
+
 regressions <- readRDS(here::here("results", "regressions_automa.rds"))
 glimpse(regressions)
 
@@ -712,22 +803,56 @@ nregs <- results %>%
   select(npps=n, nregressions) %>% 
   arrange(-npps)
 
-nregs
-
 ```
-
 
 
 This program ran a total of `r nrow(results)` regressions, including `r length(unique(results$MSR_RESULT_ID))` measures, `r length(setdiff(unique(results$PPS_ID), 1))` PPS's, and the statewide weighted average. I only included combinations of measures and PPS's for which there were no missing observations.
 
-Here is a table of the number of regressions by the number of PPS's included (counting the statewide average as a PPS):
 
 ```{r results='asis'}
-nregs %>% janitor::adorn_totals() %>% kable()
+# nregs %>%
+#   janitor::adorn_totals() %>%
+#   datatable(colnames=c("Number of PPS's (counting statewide total as a PPS)"="npps",
+#                        "Number of regressions"="nregressions"),
+#             rownames = FALSE,
+#             options = list(ordering=FALSE)) %>%
+#   formatStyle("Number of PPS's (counting statewide total as a PPS)", `text-align` = 'left')
+
+nregs %>%
+  janitor::adorn_totals() %>%
+  kable(align=c("l", "r"),
+        col.names=c("Number of PPS's (counting statewide total as a PPS)",
+                    "Number of regressions")) %>%
+  kable_styling()
+
 ```
 
 
 Overall, DSRIP had a significant effect in `r sprintf("%2.1f", mean(results$good) * 100)`% of these regressions. I considered the DSRIP effect significant if the DSRIP intercept or DSRIP slope or both were significantly different from 0 at the `r sprintf("%0.2f", pcut)` level and the relevant DSRIP coefficient(s) had the appropriate sign for improvement in the measure.
+
+
+
+```{r results='asis'}
+vars <- c("shift", "slope", "both", "none") # these are in the desired sort order
+labs <- c("Intercept only", "Slope only", "Both intercept and slope", "Not significant")
+
+results %>%
+  group_by(sig_type) %>%
+  summarise(n=n()) %>%
+  mutate(sig_type=factor(sig_type, levels=vars, labels=labs)) %>%
+  arrange(sig_type) %>%
+  janitor::adorn_totals() %>%
+  mutate(pct=n / n[sig_type=="Total"] * 100) %>%
+  kable(caption="Number of regressions by type of significance",
+        align=c("l", "r", "r"),
+        digits=c(0, 0, 1),
+        col.names=c("Type of significance",
+                    "Number of regressions",
+                    "Percent of total")) %>%
+  kable_styling()
+
+```
+
 
 
 ## Tables of results
@@ -740,7 +865,8 @@ results %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
   summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
   arrange(-pct_signif) %>%
-  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;"),
+            rownames = FALSE) %>%
   formatRound(columns=c('pct_signif'), digits=1)
 
 
@@ -749,14 +875,15 @@ results %>%
   group_by(PPS_ID, PPS_NAME) %>%
   summarise(nregressions=n(), pct_signif=mean(good) * 100) %>%
   arrange(-pct_signif) %>%
-  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;")) %>%
+  datatable(caption=htmltools::tags$caption(paste0(h1, " ", h2), style="text-align:left;"),
+            rownames = FALSE) %>%
   formatRound(columns=c('pct_signif'), digits=1)
 
 
 ```
 
 
-## Facet plots for the 5 measures that had the greatest percentage of PPS's for which DSRIP was significant and indicated improvement
+## Facet plots for measures that had the greatest percentage of PPS's for which DSRIP was significant and indicated improvement
 ```{r meas_regplot, fig.height=12, fig.width=12}
 # get the measures we want
 mlist <- results %>%
@@ -770,8 +897,7 @@ f <- function(meas) {
     left_join(results %>%
                 select(PPS_ID, MSR_RESULT_ID, good) %>%
                 mutate(good=factor(good))) %>%
-    mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
-           my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer) %>%
+    mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35)) %>%
     arrange(PPS_ID, time)
   npanels <- length(unique(pdata$PPS_ID))
   ncolumns <- case_when(npanels <= 2 ~ 1,
@@ -804,7 +930,7 @@ f <- function(meas) {
 
 brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
 
-for(meas in mlist$MSR_RESULT_ID[1:5]){
+for(meas in mlist$MSR_RESULT_ID[1:10]){
   p <- f(meas)
   print(p)
   ggsave(here::here("results", paste0(meas, "_p", pcut, "_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
@@ -817,7 +943,7 @@ for(meas in mlist$MSR_RESULT_ID[1:5]){
 
 
 
-## Facet plots for the 5 PPS's that had the greatest percentage of measures for which DSRIP was significant and indicated improvement
+## Facet plots for PPS's that had the greatest percentage of measures for which DSRIP was significant and indicated improvement
 ```{r pps_regplot, fig.height=12, fig.width=12}
 # get the PPSs we want
 plist <- results %>%
@@ -843,8 +969,7 @@ g <- function(ppsid) {
     left_join(results %>%
                 select(PPS_ID, MSR_RESULT_ID, good) %>%
                 mutate(good=factor(good))) %>%
-    mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35),
-           my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer) %>%
+    mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=70, wrap=35)) %>%
     arrange(PPS_ID, time)
   
   # pick up to 25 measures for this pps
@@ -863,8 +988,7 @@ g <- function(ppsid) {
     
   p <- pdata %>% 
     filter(MSR_RESULT_ID %in% pps_measure_list) %>%
-    mutate(my4=ifelse(PER_END_DT >= "2017-07-01" &  PER_END_DT <= "2018-03-31", 1, 0) %>% as.integer,
-         mname=paste0(MSR_RESULT_ID, ": ", msr_name(MSR_RESULT_ID)) %>% str_wrap(35)) %>%
+    mutate(mname=paste0(MSR_RESULT_ID, ": ", msr_name(MSR_RESULT_ID)) %>% str_wrap(35)) %>%
     arrange(MSR_RESULT_ID, time) %>%
     ggplot(aes(time, MSR_RESULT, colour=good)) +
     scale_colour_manual(values=c("black", "orange"), drop=FALSE) +
@@ -893,6 +1017,146 @@ for(ppsid in plist$PPS_ID[1:10]){
   ggsave(here::here("results", paste0("pps_", ppsid, "_p", pcut, "_regression_facet.png")), plot=p, width=10, height=10, scale=1.25)
 }
 
+
+```
+
+
+# Assumption checks
+
+Based partly on:
+
+*  James Lopez Bernal, Steven Cummins, Antonio Gasparrini, Interrupted time series regression for the evaluation of public health interventions: a tutorial, International Journal of Epidemiology, Volume 46, Issue 1, February 2017, Pages 348–355, https://doi.org/10.1093/ije/dyw098
+
+Structure of the policy change:
+
+*  ITS requires us to identify when the policy change happened. If it was phased in (or phased into the data) we need to be able to identify that. We should try to learn when and how PPS's implemented DSRIP, and what sort of lags there might be.
+*  ITS is best with outcomes that can change quickly after the policy change. If that cannot happen (e.g., it may be hard with clinical measures), intermediate outcomes (e.g., access to care, advisement of patients) that can change quickly may be more appropriate.
+
+Technical issues:
+
+* linear trend or transformation to linear
+* gradual introduction of intervention or multiple introductions
+* external time-varying events
+* autocorrelation
+* changing characteristics of population over time
+
+Cautions:
+
+*  Studies with few time points or with small expected effect sizes should be interpreted with caution as they may be underpowered
+*  Power is also increased if the numbers of data points are equally distributed before and after the intervention, though this is often not practical
+
+
+
+# Robustness checks and variants
+
+```{r its_arima_mafixed, include=FALSE}
+a <- proc.time()
+xvars <- c("time_ma", "dsrip_ma", "interaction_ma")
+regressions_mafixed <- regdata %>%
+  # additional filtering if desired:
+  # filter(PPS_ID %in% (c(1:99)) %>%
+  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
+  nest(data=-c(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME)) %>%
+    mutate(
+    fit = map(data, ~ arima(.$MSR_RESULT, 
+                            xreg = as.matrix(.[, xvars]),
+                            order=c(0, 0, 11),
+                            fixed = c(rep(1, 11), NA, NA, NA, NA ))),
+    tidied = map(fit, tidy),
+    glanced = map(fit, glance),
+    ztest=map(fit, ztest, dgrf="calc"))
+b <- proc.time()
+b - a # 40 seconds for 605 regressions
+saveRDS(regressions_mafixed, here::here("results", "regressions_mafixed.rds"))
+
+regressions_mafixed <- readRDS(here::here("results", "regressions_mafixed.rds"))
+regressions_mafixed %>% ht
+
+```
+
+
+
+```{r its_ols, include=FALSE}
+# run ols regressions with untransformed data, just for comparison
+a <- proc.time()
+xvars <- c("time", "dsrip", "interaction")
+regressions_ols <- regdata %>%
+  # additional filtering if desired:
+  # filter(PPS_ID %in% (c(1:99)) %>%
+  arrange(PPS_ID, MSR_RESULT_ID, time) %>%
+  nest(data=-c(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME)) %>%
+    mutate(
+    fit = map(data, ~ arima(.$MSR_RESULT, 
+                            xreg = as.matrix(.[, xvars]),
+                            order=c(0, 0, 0))),
+    tidied = map(fit, tidy),
+    glanced = map(fit, glance),
+    ztest=map(fit, ztest, dgrf="nocalc"))
+b <- proc.time()
+b - a # 20 seconds for 605 regressions
+saveRDS(regressions_ols, here::here("results", "regressions_ols.rds"))
+
+regressions_ols <- readRDS(here::here("results", "regressions_ols.rds"))
+regressions_ols %>% ht
+
+```
+
+
+## Comparison to OLS model with untransformed data
+
+```{r include=FALSE}
+regressions_ols <- readRDS(here::here("results", "regressions_ols.rds"))
+glimpse(regressions_ols)
+
+rlist_ols <- reg_results(regressions_ols)
+
+results_ols <- rlist_ols$results
+glimpse(results_ols)
+
+# significance pvalue for regressions -- define in only 1 place to avoid mistakes
+pcut <- .01
+# pcut <- .05
+# pcut <- .10
+
+results_ols <- get_sig(results_ols, shift="dsrip", slope="interaction", pvalue.cut=pcut)
+count(results_ols, sig_type)
+mean(results_ols$good)
+
+```
+
+```{r}
+count(results_ols, sig_type)
+mean(results_ols$good)
+
+```
+
+
+## Comparison to arima model with ma data and 11 mixed ma error coefficients
+
+```{r include=FALSE}
+regressions_mafixed <- readRDS(here::here("results", "regressions_mafixed.rds"))
+glimpse(regressions_mafixed)
+
+rlist_mafixed <- reg_results(regressions_mafixed)
+
+results_mafixed <- rlist_mafixed$results
+glimpse(results_mafixed)
+
+# significance pvalue for regressions -- define in only 1 place to avoid mistakes
+pcut <- .01
+# pcut <- .05
+# pcut <- .10
+
+results_mafixed <- get_sig(results_mafixed, shift="dsrip_ma", slope="interaction_ma", pvalue.cut=pcut)
+count(results_mafixed, sig_type)
+mean(results_mafixed$good)
+
+```
+
+
+```{r}
+count(results_mafixed, sig_type)
+mean(results_mafixed$good)
 
 ```
 

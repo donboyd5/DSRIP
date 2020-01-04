@@ -389,9 +389,12 @@ comps
 ```
 
 
-### Model 5 (preferred): Preferred independent variables AND moving average error term with coefficients fixed at 1
+### Model 5: Preferred independent variables AND moving average error term with coefficients fixed at 1
 Now the coefficients on the policy variables should be good (close to those from those from the model estimated using the underlying data without moving averages) and we should see no significant autocorrelation in the residuals.
-```{r mod_best}
+
+Although this is the correct model in concept, I am reluctant to use it by default in practice. My experience with messy actual data suggests there may be other problems with error terms besides the problems in this simple example and it may make sense to try to adjust for error structures in the best way possible, on a case by case basis, rather than assume fixed coefficients for the ma lags.
+
+```{r mod_ma_fixed}
 # Finally, we can do better given that we know what the error structure is.
 # It includes a moving average of the 11 previous errors so we use order c(0, 0, 11)
 # All previous errors are weighted equally so we fix the 11 MA coefficients at 1
@@ -433,7 +436,7 @@ modnames <- c("True Model, no error",
               "Model 2: MA for depvar and for independent variables, but no correction for errors",
               "Model 3: MA for depvar and for independent variables, plus AR(1) term",
               "Model 4: MA for depvar and for independent variables, chosen by auto.arima",
-              "Model 5: Best model: MA for depvar and for independent variables, restricted MA error term")
+              "Model 5: MA for depvar and for independent variables, restricted MA error term")
 names(modnames) <- models
 
 ```
@@ -454,11 +457,11 @@ effects  %>%
 
 
 ```{r fig.height=6, fig.width=10}
-levs <- c("emod0", "emod1", "emod2", "emod3", "emod5")
+levs <- c("emod0", "emod1", "emod2", "emod3", "emod4", "emod5")
 labs <- modnames[levs]
 
 p <- effects %>% 
-  select(time, emod0, emod1, emod2, emod3, emod5) %>%
+  select(time, emod0, emod1, emod2, emod3, emod4, emod5) %>%
   gather(variable, value, -time) %>%
   mutate(variable=factor(variable,
                          levels=levs,
@@ -477,8 +480,8 @@ p
 
 
 p1 <- effects %>% 
-  select(time, emod0, emod1, emod2, emod3, emod5) %>%
-  mutate_at(vars(emod2, emod1, emod3, emod5), ~ . - emod0) %>%
+  select(time, emod0, emod1, emod2, emod3, emod4, emod5) %>%
+  mutate_at(vars(emod2, emod1, emod3, emod4, emod5), ~ . - emod0) %>%
   gather(variable, value, -time, -emod0) %>%
   mutate(variable=factor(variable,
                          levels=levs,
@@ -496,6 +499,46 @@ p1 <- effects %>%
           subtitle="Alternative model minus estimates from non-moving-average data (Model 0)")
 p1
 
+p1a <- effects %>% 
+  select(time, emod0, emod2, emod3, emod4, emod5) %>%
+  mutate_at(vars(emod2, emod3, emod4, emod5), ~ . - emod0) %>%
+  gather(variable, value, -time, -emod0) %>%
+  mutate(variable=factor(variable,
+                         levels=levs,
+                         labels=str_wrap(labs, 25))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(-50, 50, .1)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Estimated policy impacts with moving-average data, excludes Model 1 - NOTE SCALE",
+          subtitle="Alternative model minus estimates from non-moving-average data (Model 0)")
+p1a
+
+p1b <- effects %>% 
+  select(time, emod0, emod4, emod5) %>%
+  mutate_at(vars(emod4, emod5), ~ . - emod0) %>%
+  gather(variable, value, -time, -emod0) %>%
+  mutate(variable=factor(variable,
+                         levels=levs,
+                         labels=str_wrap(labs, 25))) %>%
+  ggplot(aes(time, value, colour=variable)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  scale_x_continuous(name="Month (1=first month of policy change)", breaks=seq(-36, 48, 3)) +
+  scale_y_continuous(name="Outcome", breaks=seq(-50, 50, .1)) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
+  ggtitle("Estimated policy impacts with moving-average data, Models 4 and 5 - NOTE SCALE",
+          subtitle="Alternative model minus estimates from non-moving-average data (Model 0)")
+p1b
+
 p2 <- effects %>% 
   select(time, emod0, emod5) %>%
   gather(variable, value, -time) %>%
@@ -511,7 +554,7 @@ p2 <- effects %>%
   theme_bw() +
   theme(legend.title = element_blank(),
         legend.text = element_text(margin = margin(t = 5, b = 5, unit = "pt"))) +
-  ggtitle("Comparison of best model to true model, both estimated on data with random noise")
+  ggtitle("Comparison of Model 5 (fixed MA terms) to true model, both estimated on data with random noise")
 p2
 
 
