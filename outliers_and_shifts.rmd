@@ -105,8 +105,10 @@ ppsdf <- ppsdf %>%
 
 
 ```{r include=FALSE}
-getout <- function(vec, crit.val=2.75, delta.val=0.7){
-  # function to identify different kinds of outliers using the tsoutliers package
+# functions to identify outliers in a vector and return a data frame of outlier locations
+
+get_level_shift <- function(vec, crit.val=2.75, delta.val=0.7){
+  # function to identify different level shifts
   #   vec is a numeric vector (sorted by time sequence)
   #   the return will be outdf, a data frame with information on outliers in the data, including their positions
   
@@ -115,98 +117,130 @@ getout <- function(vec, crit.val=2.75, delta.val=0.7){
   # A Level Shift (LS) represents an abrupt change in the mean level
   # A Transient Change (TC) represents a spike that takes a few periods to disappear
   
-  # focus on finding points that meet multiple criteria
+  # focus on finding points that meet level-shift criteria
   
   # the lower crit.val is, the more sensitive this is to outliers (the more likely to find them)
   # the default is NULL; values below about 3 seeem useful
   
   # lower delta.val also tends to find more outliers; 0.7 is default
   
-  # look for each kind of outlier individually
-  tsobj <- ts(vec, frequency=1) # the tso function requires a time-series object
-  
-  inner.loop <- 10
-  outer.loop <- 6
-  
-  # get each of the 4 kinds of outliers separately, rather than all at once - I have found this to work well
-  aom <- tsoutliers::tso(tsobj, types = "AO", 
-             cval = crit.val, delta = delta.val, 
-             maxit = 1, maxit.iloop = inner.loop, maxit.oloop = outer.loop, 
-             tsmethod="arima",  args.tsmethod = list(order=c(1, 0, 0)))
-  
-  iom <- tsoutliers::tso(tsobj, types = "IO", 
-             cval = crit.val, delta = delta.val, 
-             maxit = 1, maxit.iloop = inner.loop, maxit.oloop = outer.loop, 
-             tsmethod="arima",  args.tsmethod = list(order=c(1, 0, 0)))
-  
-  lsm <- tsoutliers::tso(tsobj, types = "LS", 
-             cval = crit.val, delta = delta.val, 
-             maxit = 1, maxit.iloop = inner.loop, maxit.oloop = outer.loop, 
-             tsmethod="arima",  args.tsmethod = list(order=c(1, 0, 0)))
-  
-  tcm <- tsoutliers::tso(tsobj, types = "TS", 
-             cval = crit.val, delta = delta.val, 
-             maxit = 1, maxit.iloop = inner.loop, maxit.oloop = outer.loop, 
-             tsmethod="arima",  args.tsmethod = list(order=c(1, 0, 0)))
-  
-  # create data frame with all 4 kinds of outliers
-  outdf <- bind_rows(aom$outliers, iom$outliers, lsm$outliers, tcm$outliers)
-  return(outdf)
-}
-
-vec <- df$MSR_RESULT
-getao <- function(vec, crit.val=2.75, delta.val=0.7){
-  # function to identify different kinds of outliers using the tsoutliers package
-  #   vec is a numeric vector (sorted by time sequence)
-  #   the return will be outdf, a data frame with information on outliers in the data, including their positions
-  
-  # kinds of outliers
-  # An Additive Outlier (AO) represents an isolated spike
-  # A Level Shift (LS) represents an abrupt change in the mean level
-  # A Transient Change (TC) represents a spike that takes a few periods to disappear
-  
-  # focus on finding points that meet multiple criteria
-  
-  # the lower crit.val is, the more sensitive this is to outliers (the more likely to find them)
-  # the default is NULL; values below about 3 seeem useful
-  
-  # lower delta.val also tends to find more outliers; 0.7 is default
-  
-  # look for each kind of outlier individually
-  tsobj <- ts(vec, frequency=1) # the tso function requires a time-series object
-  
-  inner.loop <- 10
-  outer.loop <- 6
-  
-  # get each of the 4 kinds of outliers separately, rather than all at once - I have found this to work well
-  aom <- tsoutliers::tso(tsobj, types = "AO", 
-             cval = crit.val, delta = delta.val, 
-             maxit = 1, maxit.iloop = inner.loop, maxit.oloop = outer.loop, 
-             tsmethod="arima",  args.tsmethod = list(order=c(1, 0, 0)))
-
-  # create data frame with all 4 kinds of outliers
-  outdf <- aom$outliers %>% select(type, ind, coefhat, tstat) %>% as_tibble
-  
-  # if there are no rows outdf is an empty data frame with wrong column types 
-  # so if there are no rows create a 1-row df with proper types
-  if(nrow(outdf)==0){
-    # column types need to be as follows type factor, ind int, time num, coefhat num, tstat num
-    outdf <- tibble(type=factor(), ind=integer(), coefhat=numeric(), tstat=numeric())
+  make_empty_row <- function(vec){
+    # define 1-row data frame to return if we have bad data or bad results
+    outdf <- tibble(nobs=length(vec), type=factor(NA_character_), ind=NA_integer_, coefhat=NA_real_, tstat=NA_real_)
+    outdf
   }
   
+  if(length(vec) < 48) return(make_empty_row(vec)) # too few observations
+  
+  tsobj <- ts(vec, frequency=1) # the tso function requires a time-series object
+  
+  inner.loop <- 10
+  outer.loop <- 6
+  
+  # get each of the 4 kinds of outliers separately, rather than all at once - I have found this to work well
+  out <- tsoutliers::tso(tsobj, types = "LS", maxit.iloop = inner.loop,
+                         cval = crit.val,
+                         tsmethod="arima",
+                         args.tsmethod = list(order=c(0, 1, 1)))
+
+  if(nrow(out$outliers)==0) return(make_empty_row(vec))
+  
+  # we only get here if we have an acceptable result
+  outdf <- out$outliers %>% 
+    mutate(nobs=length(vec)) %>%
+    select(nobs, type, ind, coefhat, tstat) %>% 
+    as_tibble
+  
   return(outdf)
 }
+
+
+get_level_shift_trapping <- function(vec, crit.val=2.75, delta.val=0.7){
+  # function to identify different level shifts
+  #   vec is a numeric vector (sorted by time sequence)
+  #   the return will be outdf, a data frame with information on outliers in the data, including their positions
+  
+  # this is a robust version that looks for several kinds of problems that could occur in the data:
+  #  - an input vector that has too few values to run through the  outliers routine
+  #  - an error that causes the arima optimization routine
+  #     to fail (I am not sure I know when this occurs, but it is rare)
+  #  - a problem in which the arima optimzation routine runs but does not return a data frame of outlier locations
+  #     presumably something was not right in the data
+  #  - zero ouliers found - not really a problem, we just need to exit gracefully
+  
+  # kinds of outliers
+  # An Additive Outlier (AO) represents an isolated spike
+  # A Level Shift (LS) represents an abrupt change in the mean level
+  # A Transient Change (TC) represents a spike that takes a few periods to disappear
+  
+  # focus on finding points that meet level-shift criteria
+  
+  # the lower crit.val is, the more sensitive this is to outliers (the more likely to find them)
+  # the default is NULL; values below about 3 seeem useful
+  
+  # lower delta.val also tends to find more outliers; 0.7 is default
+  
+  make_empty_row <- function(vec){
+    # define 1-row data frame to return if we have bad data or bad results
+    outdf <- tibble(nobs=length(vec), type=factor(NA_character_), ind=NA_integer_, coefhat=NA_real_, tstat=NA_real_)
+    outdf
+  }
+  
+  # I'm not sure what to set as the minimum vector length but for now I use 3 years
+  if(length(vec) < 36) return(make_empty_row(vec)) # too few observations
+  
+  # now we're ready to start
+  tsobj <- ts(vec, frequency=1) # the tso function requires a time-series object
+  
+  inner.loop <- 10
+  outer.loop <- 6
+  
+  # we have to put the tso function into a function that calls it and looks for an error
+  runtso <- function(tsobj) {
+    out <- tryCatch(
+      {
+        # run the function
+        tsoutliers::tso(tsobj, types = "LS", maxit.iloop = inner.loop,
+                        cval = crit.val,
+                        tsmethod="arima",
+                        args.tsmethod = list(order=c(0, 1, 1)))
+        },
+      # now we can decide what to do if we cautht an error
+      error=function(e) {
+        return(make_empty_row(vec)) # exit with proper output
+        }
+      )
+    # if we get here the arima optimization ran but that doesn't necessarily mean the results are good
+    # we'll check that further below
+    return(out)
+  }
+  outlist <- runtso(tsobj)
+  
+  # the "outliers" data frame may not exist in outlist so we have to check for that - not sure when this will happen
+  if(!exists("outliers", where=outlist)) return(make_empty_row(vec))
+  
+  # if we get here, arima ran AND we have an outliers data frame, but it may not have any rows
+  if(nrow(outlist$outliers)==0) return(make_empty_row(vec))
+  
+  # we only get here if we have an acceptable result so we add nobs and return the outliers data frame
+  outdf <- outlist$outliers %>% 
+    mutate(nobs=length(vec)) %>%
+    select(nobs, type, ind, coefhat, tstat) %>% 
+    as_tibble
+  
+  return(outdf)
+}
+
 
 
 ```
 
 
-# test the function on some known problems
+# test the function on some known situations - several smooth, several with breaks
 ```{r eval=FALSE}
-
-# make a sample of smooth, breaks, outliers and other data
+# create test data sample of vectors with different characteristics, based upon in spection of plots
 defs <- tribble(
-  ~type, ~MSR_RESULT_ID, ~PPS_ID,
+  ~vectype, ~MSR_RESULT_ID, ~PPS_ID,
   "smooth", "AAPC20RES", 25,
   "smooth", "CAPC12MRES", 14,
   "smooth", "PDI14RES", 36,
@@ -226,46 +260,27 @@ defs
 ns(defs)
 
 test_data <- ppsdf %>% 
-  select(MSR_RESULT_ID, PPS_ID, PER_END_DT, time, MSR_RESULT) %>%
+  select(MSR_RESULT_ID, PPS_ID, PER_END_DT, time, PER_END_DT, MSR_RESULT) %>%
   right_join(defs, by=c("MSR_RESULT_ID", "PPS_ID"))
-
-gnum <- 10; getao(test_data$MSR_RESULT[test_data$groupnum==gnum])
-
-
-f <- function(df) {getao(df$MSR_RESULT)} # ; getao(df$MSR_RESULT)}
-f <- function(df) {head(df, 3)} 
-
-
-grps <- c(1, 4, 9)
-grps <- 1
-d <- test_data %>%
-  filter(groupnum %in% grps) %>%
-  select(groupnum, PPS_ID, MSR_RESULT_ID, MSR_RESULT) %>%
-  nest(data=MSR_RESULT) %>%
-  mutate(out=map(data, f))
-
 ns(test_data)
-d <- test_data %>%
-  select(groupnum, PPS_ID, MSR_RESULT_ID, time, MSR_RESULT) %>%
-  nest(data=c(time, MSR_RESULT)) %>%
-  mutate(out=map(data, f))
-d
-str(d$out)
+glimpse(test_data)
 
+fls <- function(df, crit.val) {get_level_shift_trapping(df$MSR_RESULT, crit.val = crit.val)}
+
+d <- test_data %>%
+  nest(data=c(PER_END_DT, time, MSR_RESULT)) %>%
+  mutate(out=map(data, fls, crit.val=4.5))
+d
 
 outdf <- d %>%
   unnest(out, keep_empty = TRUE)
+outdf
 
-tmp <- outdf %>%
-  select(groupnum, MSR_RESULT_ID, PPS_ID, ind) %>%
-  filter(groupnum %in% c(4, 5, 8)) %>% 
+vlines <- outdf %>%
+  filter(!is.na(ind)) %>%
+  select(groupnum, MSR_RESULT_ID, PPS_ID, idname, ind) %>%
   mutate(time=ind - 13)
-
-tmp <- outdf %>%
-  select(groupnum, MSR_RESULT_ID, PPS_ID, ind) %>%
-  mutate(time=ind - 13)
-
-tmp
+vlines
 
 brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
 p <- test_data %>%
@@ -276,53 +291,88 @@ p <- test_data %>%
   scale_x_continuous(breaks=brks) +
   geom_vline(xintercept = 1, colour="blue", linetype="solid") +
   geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
-  # geom_vline(xintercept=tmp$time, colour="red") +
-  geom_vline(aes(xintercept=time), colour="red", data=tmp) +
+  geom_vline(aes(xintercept=time), colour="red", data=vlines) +
   theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
   theme_bw() +
-  facet_wrap(~MSR_RESULT_ID + PPS_ID, ncol=3, scales = "free") +
+  facet_wrap(~MSR_RESULT_ID + idname, ncol=3, scales = "free") +
   theme(legend.position = "none")
 p
 glimpse(test_data)
 
-f <- function(gnum) {
-  badvals <- getao(test_data %>% filter(groupnum==gnum) %>% .$MSR_RESULT)
-  return(badvals)
-}
-for(i in 1:10) print(f(i))
-f(5)
-gnum <- 1
-
-fplot <- function(df){
-  g <- function(gnum){
-    outdf <- getao(df %>% filter(groupnum==gnum) %>% .$MSR_RESULT)
-    badvals <- outdf$ind
-    badvals
-  }
-  
-  brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
-  p <- df %>%
-    ggplot(aes(time, MSR_RESULT)) +
-    geom_line() +
-    geom_point() +
-    scale_x_continuous(breaks=brks) +
-    geom_vline(xintercept = 1, colour="blue", linetype="solid") +
-    geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
-    # geom_vline(xintercept=g() - 13, colour="red", data=.) +
-    theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
-    theme_bw() +
-    facet_wrap(~MSR_RESULT_ID + idname, ncol=3, scales = "free") +
-    theme(legend.position = "none")
-  p
-}
-
-fplot(test_data)
-ns(test_data)
-
-df <- test_data
-
 ```
 
+
+# Analyze level shifts
+```{r get_shifts, include=FALSE}
+
+fls <- function(df, crit.val) {get_level_shift_trapping(df$MSR_RESULT, crit.val = crit.val)}
+# fls <- function(df, crit.val) {tibble(n=nrow(df))}
+
+ns(ppsdf)
+
+a <- proc.time()
+shifts <- ppsdf %>% 
+  select(MSR_RESULT_ID, PPS_ID, PER_END_DT, time, PER_END_DT, MSR_RESULT, PPS_NAME, MSR_RESULT_NAME, idname) %>%
+  nest(data=c(PER_END_DT, time, MSR_RESULT)) %>%
+  mutate(out=map(data, fls, crit.val=4.5))
+# may throw warnings that it set some residuals to zero
+b <- proc.time()
+b - a
+glimpse(shifts)
+
+shifts_long <- shifts %>%
+  unnest(out, keep_empty = TRUE)
+glimpse(shifts_long)
+
+shifts_long %>%
+  group_by(MSR_RESULT_ID, PPS_ID) %>%
+  summarise(nbreaks=sum(!is.na(ind)), obsmin=min(nobs), obsmdn=median(nobs)) %>%
+  group_by(nbreaks) %>%
+  summarise(n=n(), obsmin=min(obsmin), obsmdn=median(obsmdn))
+
+shifts_long %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(n=n(), nbreaks=nbreaks=sum(!is.na(ind))) %>%
+  mutate(pctbreaks=nbreaks / n * 100) %>%
+  arrange(-nbreaks)
+
+shifts_long %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME, idname) %>%
+  summarise(n=n(), nbreaks=sum(!is.na(ind))) %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(n=n(), breaks=sum(nbreaks>0)) %>%
+  mutate(pctbreaks=breaks / n * 100) %>%
+  arrange(-breaks)
+
+
+vlines <- shifts_long %>%
+  filter(!is.na(ind)) %>%
+  select(MSR_RESULT_ID, PPS_ID, idname, ind) %>%
+  mutate(time=ind - 13)
+vlines
+
+brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+fltr <- expression(PPS_ID %in% c(1:5, 16, 52, 99) & MSR_RESULT_ID %in% c("AAPC20RES", "AMRRES"))
+
+fltr <- expression(MSR_RESULT_ID == "AAPC45RES")
+vlines2 <- vlines %>% filter(eval(fltr))
+p <- ppsdf %>%
+  filter(eval(fltr)) %>%
+  ggplot(aes(time, MSR_RESULT)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks=brks) +
+  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+  geom_vline(aes(xintercept=time), colour="red", data=vlines2) +
+  theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
+  theme_bw() +
+  facet_wrap(~MSR_RESULT_ID + PPS_ID, ncol=5, scales = "free") +
+  theme(legend.position = "none")
+p
+
+
+```
 
 
 
