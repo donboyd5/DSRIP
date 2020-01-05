@@ -12,6 +12,16 @@ editor_options:
   chunk_output_type: inline
 ---
 
+# Introduction
+This program automates Interrupted Time Series regression on DSRIP monthly data. 
+
+The DOH data create many problems. The DSRIP measures are 12-month moving averages and have many shifts in levels up and down. This program addresses these as follows:
+
+* It uses moving averages of the time and dummy variables on the right hand side.
+* It addressses correlation in the error structure, generally through use of arima. 
+
+It does not yet address level shifts in the data. A separate program identifies these shifts. It may be best to exclude from the ITS analysis any outcome measures that have significant shifts.
+
 
 # Setup code - run all of these chunks
 <!-- setup chunk -->
@@ -362,7 +372,13 @@ timedf
 saveRDS(timedf, paste0(don_dir, "timedf.rds"))
 
 ppsall_ma <- ppsall %>%
-  left_join(timedf, by = "PER_END_DT")
+  left_join(timedf, by = "PER_END_DT") %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  arrange(PER_END_DT) %>%
+  mutate(rownum=row_number()) %>%
+  ungroup
+
+count(ppsall_ma %>% filter(rownum==1), PER_END_DT)  
 
 glimpse(ppsall_ma)
 count(ppsall_ma, MSR_RESULT_ID)

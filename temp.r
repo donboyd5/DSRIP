@@ -1,3 +1,9 @@
+tmp <- ppsdf %>%
+  filter(MSR_RESULT_ID=="SPCRECRES")
+
+
+
+
 runtso <- function(url) {
   out <- tryCatch(
     {

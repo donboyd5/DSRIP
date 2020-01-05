@@ -9,12 +9,27 @@ output:
 always_allow_html: yes    
     
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
+<!-- comments -->
+<!-- -->
 
+# Introduction
+
+This program automates identification of level shifts in the DOH DSRIP data. It uses arima-based detection methods commonly used in econometrics.
+
+It uses monthly PPS data that were current as of late December 2019.
+
+The program examines approximately 1,400 PPS-measure combinations. Where data allow, it determines whether there are any level shifts and where the shifts are. It summarizes the number of shifts by month, by measure, and by PPS.
+
+The results could be used to identify which combinations of PPS's and measures are suitable for interrupted time series analysis, and which are not.
+
+<!-- 
 # Setup code - run all of these chunks
-<!-- setup chunk -->
+This section, run silently, defines options, global variables, libraries, and selected functions.
+-->
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
 ```
@@ -62,10 +77,14 @@ library("zoo") # for rollapply
 library("broom") # for automating the cleanup of complex output
 library("tsoutliers")
 
+library("janitor")
+
 ```
 
 
 ```{r functions_general, include=FALSE}
+# general functions that might be used anywhere in the program
+
 ns <- function(df) {names(df) %>% sort}
 
 
@@ -88,7 +107,16 @@ pps_wrap <- function(PPS_ID, PPS_NAME, maxlen=100, wrap=25) {
 ```
 
 
-# START OF ANALYSIS -- with combined PPS/Statewide data
+# Get combined PPS/Statewide data
+<!-- -->
+Get previously created data:
+
+* Monthly PPS data constructed from Chris's data as of late December 2019. I used long-format data and added statewide averages. I called the statewide data PPS 99 so that it would appear last in plots sorted by PPS id.
+* Tables with information on measures and on PPS names.
+
+The data were created from Chris's original data in [this program](https://github.com/donboyd5/DSRIP/blob/master/its_on_DSRIP_data.rmd), in the "ONETIME data prep" section.
+
+
 ```{r getdata, include=FALSE}
 # get previously created data
 ppsdf <- readRDS(paste0(don_dir, "ppsall_ma.rds")) # monthly pps and statewide data, long
@@ -99,30 +127,188 @@ measures
 # to be on the safe side make sure ppsdf is ungrouped and sorted
 ppsdf <- ppsdf %>%
   ungroup %>%
+  mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=1000, wrap=1000)) %>% # unwrapped concatenation; 100, 25 defaults
   arrange(PPS_ID, MSR_RESULT_ID, PER_END_DT) 
 
 ```
 
 
+# Data check before analysis
+Two data checks below:
+
+* How many PPS-measure combinations have NA values and should we drop combinations that have NAs?
+* How many observations are left in the remaining PPS-measure combinations and should we drop combinations with fewer than a certain number of observations?
+
+
+```{r include=FALSE, eval=FALSE}
+# examine NA values
+
+ns(ppsdf)
+summary(ppsdf)
+ppsdf %>% select(PPS_ID, MSR_RESULT_ID) %>% unique %>% nrow # 1,398 unique PPS-measure combinations
+# 113 out of 61245 obs have NA MSR_RESULT
+ppsdf %>% filter(is.na(MSR_RESULT)) %>% count(MSR_RESULT_ID)
+ppsdf %>% filter(is.na(MSR_RESULT)) %>% count(idname)
+ppsdf %>% filter(is.na(MSR_RESULT)) %>% count(MSR_RESULT_ID, idname) %>% arrange(-n)
+# 21 PPS-measure combinations will be lost
+
+# look at the worst
+ppsdf %>% 
+  filter(MSR_RESULT_ID=="PDI15RES", PPS_ID==45) %>% 
+  select(MSR_RESULT_ID, idname, PER_END_DT, MSR_NUM, MSR_DEN, MSR_RESULT)
+# looks like they could have instead chosen to zero-out MSR_RESULT, but not enough people to use this anyway
+
+# look at a case with only one NA
+ppsdf %>% 
+  filter(MSR_RESULT_ID=="PQI15RES", PPS_ID==32) %>% 
+  select(MSR_RESULT_ID, idname, PER_END_DT, MSR_NUM, MSR_DEN, MSR_RESULT)
+# same thing - looks like the numerator was zero and they could have zeroed this out
+# but there are too few peole to attribute any meaning to this one also
+
+# conclusion: let's drop all combinations that have any NA's
+
+```
+
+
+## PPS-measure combinations that have NA observations
+
+Delete all PPS-measure combinations that have NAs
+
+```{r}
+# show key result of the NA analysis
+ppsdf %>% 
+  filter(is.na(MSR_RESULT)) %>%
+  mutate(idname=pps_wrap(PPS_ID, PPS_NAME, maxlen=1000, wrap=1000)) %>%
+  group_by(MSR_RESULT_ID, MSR_RESULT_NAME, idname) %>%
+  summarise(n=n()) %>% 
+  arrange(-n) %>%
+  adorn_totals() %>%
+  kable(caption="# of NA observations by measure and PPS", format="html") %>%
+  kable_styling()
+
+```
+
+
+## Number of observations in remaining combinations
+
+The table below shows counts of PPS-measure combinations by the number of observations.
+
+```{r include=TRUE, eval=TRUE}
+# how many observations do we have in each PPS-measure group if we drop all combinations that have any NAs (per above)?
+check1 <- ppsdf %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  mutate(has_nas=any(is.na(MSR_RESULT))) %>%
+  ungroup %>%
+  filter(!has_nas)
+# verify that we lost 21 combinations
+fulln <- ppsdf %>% select(PPS_ID, MSR_RESULT_ID) %>% unique %>% nrow 
+checkn <- check1 %>% select(PPS_ID, MSR_RESULT_ID) %>% unique %>% nrow 
+# fulln - checkn # 21
+# rm(fulln, checkn)
+
+# now count obs
+check1 %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  summarise(nobs=n()) %>%
+  group_by(nobs) %>%
+  summarise(ncombinations=n()) %>%
+  arrange(-nobs) %>%
+  adorn_totals() %>%
+  kable(caption="Number of PPS-measure combinations, by number of good observations available",
+        format="html") %>%
+  kable_styling()
+  
+```
+
+Two questions: 
+
+1. Which month tends to be missing if we only have 56 observations instead of full 57?
+2. (To Do): do any of the combinations with fewer observations look salvageable?
+
+
+```{r}
+# get the dates we expect in the full data
+full_dates <- check1 %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  mutate(nobs=n()) %>%
+  ungroup %>%
+  filter(nobs==57) %>%
+  .$PER_END_DT %>%
+  unique
+
+obs56 <- check1 %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  mutate(nobs=n()) %>%
+  ungroup %>%
+  filter(nobs==56) %>%
+  select(PPS_ID, idname, MSR_RESULT_ID, MSR_RESULT_NAME, PER_END_DT)
+
+missing_dates <-
+  obs56 %>%
+  group_by(PPS_ID, idname, MSR_RESULT_ID, MSR_RESULT_NAME) %>%
+  summarise(missdate=setdiff(full_dates, PER_END_DT) %>% as.Date) %>%
+  ungroup
+
+count(missing_dates, missdate)
+
+```
+
+
+For this analysis, for now we'll drop all that have fewer than 56 observations and we'll drop the combination that has 56 observations and is missing 2018-01-31.
+
+
+```{r include=FALSE}
+# create a clean data file that has the bad observations removed
+baddates <- function(dates){
+  # flag whether a vector of dates is only 56 obs long and includes
+  # 2014-06-30, which means it is missing an interior date
+  ndates <- length(dates)
+  bad <- (ndates==56) & (as.Date("2014-06-30") %in% dates)
+  bad56 <- rep(bad, ndates)
+  bad56
+}
+
+drop_obs <- ppsdf %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  mutate(has_nas = any(is.na(MSR_RESULT)),
+         under56 = n()<56,
+         bad56 = baddates(PER_END_DT)) %>%
+  ungroup
+
+drop_obs %>%
+  summarise_at(vars(has_nas, under56, bad56), list(~ sum(.)))
+
+drop_groups <- drop_obs %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  summarise(has_nas=sum(has_nas), under56=sum(any(under56)), bad56=sum(any(bad56))) %>%
+  mutate(drop=has_nas | under56 | bad56) %>%
+  ungroup
+
+drop_groups %>%
+  summarise_at(vars(has_nas, under56, bad56, drop), list(~ sum(.)))
+# we'll be dropping 535 of the 1398 groups we started with
+
+ppsdf_clean <- ppsdf %>%
+  right_join(drop_groups %>%
+               filter(drop==FALSE) %>%
+               select(PPS_ID, MSR_RESULT_ID),
+            by=c("PPS_ID", "MSR_RESULT_ID"))
+# verify
+ppsdf %>% select(PPS_ID, MSR_RESULT_ID) %>% unique %>% nrow  # 1398
+ppsdf_clean %>% select(PPS_ID, MSR_RESULT_ID) %>% unique %>% nrow  # 863
+# good  
+
+```
+
+
+# Level-shift analysis
+
 ```{r include=FALSE}
 # functions to identify outliers in a vector and return a data frame of outlier locations
 
-get_level_shift <- function(vec, crit.val=2.75, delta.val=0.7){
-  # function to identify different level shifts
-  #   vec is a numeric vector (sorted by time sequence)
-  #   the return will be outdf, a data frame with information on outliers in the data, including their positions
-  
-  # kinds of outliers
-  # An Additive Outlier (AO) represents an isolated spike
-  # A Level Shift (LS) represents an abrupt change in the mean level
-  # A Transient Change (TC) represents a spike that takes a few periods to disappear
-  
-  # focus on finding points that meet level-shift criteria
-  
-  # the lower crit.val is, the more sensitive this is to outliers (the more likely to find them)
-  # the default is NULL; values below about 3 seeem useful
-  
-  # lower delta.val also tends to find more outliers; 0.7 is default
+get_level_shift <- function(vec, crit.val=3, delta.val=0.7){
+  # This is the simple version without error trapping. It works on most data. It is not used in this program
+  # because too many DSRIP series cause errors. Instead I used an error-trapping version.
   
   make_empty_row <- function(vec){
     # define 1-row data frame to return if we have bad data or bad results
@@ -130,7 +316,7 @@ get_level_shift <- function(vec, crit.val=2.75, delta.val=0.7){
     outdf
   }
   
-  if(length(vec) < 48) return(make_empty_row(vec)) # too few observations
+  if(length(vec) < 36) return(make_empty_row(vec)) # too few observations, won't be necessary if we drop bad groups
   
   tsobj <- ts(vec, frequency=1) # the tso function requires a time-series object
   
@@ -155,7 +341,10 @@ get_level_shift <- function(vec, crit.val=2.75, delta.val=0.7){
 }
 
 
-get_level_shift_trapping <- function(vec, crit.val=2.75, delta.val=0.7){
+get_level_shift_trapping <- function(vec, crit.val=3, delta.val=0.7){
+  # This version has more error trapping so that it is unlikely to bomb when used with hundreds of
+  # time series, some of which may be very poorly behaved.
+  
   # function to identify different level shifts
   #   vec is a numeric vector (sorted by time sequence)
   #   the return will be outdf, a data frame with information on outliers in the data, including their positions
@@ -168,15 +357,15 @@ get_level_shift_trapping <- function(vec, crit.val=2.75, delta.val=0.7){
   #     presumably something was not right in the data
   #  - zero ouliers found - not really a problem, we just need to exit gracefully
   
-  # kinds of outliers
+  # Kinds of outliers
   # An Additive Outlier (AO) represents an isolated spike
   # A Level Shift (LS) represents an abrupt change in the mean level
-  # A Transient Change (TC) represents a spike that takes a few periods to disappear
+  # A Temporary Change (TC) is a change in the level of the series that decreases exponentially
   
   # focus on finding points that meet level-shift criteria
   
   # the lower crit.val is, the more sensitive this is to outliers (the more likely to find them)
-  # the default is NULL; values below about 3 seeem useful
+  # the default is NULL and is calculated by tso to be about 3 for our data
   
   # lower delta.val also tends to find more outliers; 0.7 is default
   
@@ -203,7 +392,7 @@ get_level_shift_trapping <- function(vec, crit.val=2.75, delta.val=0.7){
         tsoutliers::tso(tsobj, types = "LS", maxit.iloop = inner.loop,
                         cval = crit.val,
                         tsmethod="arima",
-                        args.tsmethod = list(order=c(0, 1, 1)))
+                        args.tsmethod = list(order=c(0, 1, 1))) # not sure this is the best order but it works well
         },
       # now we can decide what to do if we cautht an error
       error=function(e) {
@@ -231,12 +420,15 @@ get_level_shift_trapping <- function(vec, crit.val=2.75, delta.val=0.7){
   return(outdf)
 }
 
-
-
 ```
 
 
-# test the function on some known situations - several smooth, several with breaks
+<!-- -->
+<!-- 
+Ok to uncomment this heading.
+# Test the function on some known situations - several smooth, several with breaks
+-->
+
 ```{r eval=FALSE}
 # create test data sample of vectors with different characteristics, based upon in spection of plots
 defs <- tribble(
@@ -302,77 +494,225 @@ glimpse(test_data)
 ```
 
 
+
 # Analyze level shifts
+The first step in this section is to run the level-shift detection routine on all combinations of PPS's and measures, and to save the results.
+
+The second step is to summarize results by month, by measure, and by PPS.
+
 ```{r get_shifts, include=FALSE}
+ns(ppsdf_clean)
 
+# define function that gets and sends a vector to our level-shift identification function
 fls <- function(df, crit.val) {get_level_shift_trapping(df$MSR_RESULT, crit.val = crit.val)}
-# fls <- function(df, crit.val) {tibble(n=nrow(df))}
 
-ns(ppsdf)
-
+# call the function separately on each subgroup of the data and keep the results in the data frame "shifts"
 a <- proc.time()
-shifts <- ppsdf %>% 
-  select(MSR_RESULT_ID, PPS_ID, PER_END_DT, time, PER_END_DT, MSR_RESULT, PPS_NAME, MSR_RESULT_NAME, idname) %>%
-  nest(data=c(PER_END_DT, time, MSR_RESULT)) %>%
-  mutate(out=map(data, fls, crit.val=4.5))
+shifts <- ppsdf_clean %>% 
+  select(MSR_RESULT_ID, PPS_ID, PER_END_DT, rownum, time, MSR_RESULT, PPS_NAME, MSR_RESULT_NAME, idname) %>%
+  nest(data=c(PER_END_DT, rownum, time, MSR_RESULT)) %>%
+  mutate(out=map(data, fls, crit.val=4.25)) # outlier flagging is very sensitive to crit.val
 # may throw warnings that it set some residuals to zero
 b <- proc.time()
 b - a
 glimpse(shifts)
 
 shifts_long <- shifts %>%
-  unnest(out, keep_empty = TRUE)
+  # keep result records for all PPS-MSR cells, even NA records for cells that had no level shifts
+  unnest(out, keep_empty = TRUE) %>% 
+  # bring in the data and time variables associated with shift points
+  left_join(ppsdf_clean %>% select(PPS_ID, MSR_RESULT_ID, ind=rownum, PER_END_DT, time),
+            by=c("PPS_ID", "MSR_RESULT_ID", "ind"))
 glimpse(shifts_long)
 
-shifts_long %>%
-  group_by(MSR_RESULT_ID, PPS_ID) %>%
-  summarise(nbreaks=sum(!is.na(ind)), obsmin=min(nobs), obsmdn=median(nobs)) %>%
-  group_by(nbreaks) %>%
-  summarise(n=n(), obsmin=min(obsmin), obsmdn=median(obsmdn))
-
-shifts_long %>%
+# quick summary of those by number of observations
+d <- shifts_long %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  summarise(n=n(), nbreaks=nbreaks=sum(!is.na(ind))) %>%
-  mutate(pctbreaks=nbreaks / n * 100) %>%
-  arrange(-nbreaks)
+  summarise(nobs=mean(nobs))
 
+
+count(shifts_long, MSR_RESULT_ID)
+
+count(shifts_long %>% filter(!is.na(PER_END_DT)), PER_END_DT) %>% arrange(desc(n))
+count(shifts_long %>% filter(!is.na(PER_END_DT)), month(PER_END_DT)) %>% arrange(desc(n))
+
+```
+
+
+```{r}
 shifts_long %>%
+  group_by(PPS_ID, MSR_RESULT_ID) %>%
+  summarise(nbreaks=sum(!is.na(ind))) %>%
+  ungroup %>%
+  summarise(ngroups=n(), n_withbreaks=sum(nbreaks>0)) %>%
+  mutate(n_withoutbreaks=ngroups - n_withbreaks,
+         pct_withbreaks=n_withbreaks / ngroups * 100)
+```
+
+
+## Number of level shifts by month
+```{r results='asis'}
+shifts_long %>%
+  filter(!is.na(ind)) %>%
+  mutate(month=month(PER_END_DT),
+         month=factor(month, levels=1:12, labels=month.name)) %>%
+  group_by(month) %>%
+  summarise(n=n()) %>%
+  arrange(-n) %>%
+  adorn_totals() %>%
+  mutate(pctshare=n / max(n) * 100) %>%
+  kable(digits=1, format="html", caption="Number of level shifts by month") %>%
+  kable_styling()
+
+```
+
+
+```{r include=FALSE}
+# summarize the data -- for each MSR-PPS cell, get # of breaks found
+glimpse(shifts_long)
+
+cell_breaks <- shifts_long %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, PPS_NAME, idname) %>%
-  summarise(n=n(), nbreaks=sum(!is.na(ind))) %>%
+  # do NOT delete NA before summarizing - we want to keep a group that only has an NA record, and
+  # therefore has 0 breaks - we'll count it as 0 breaks in the code below
+  summarise(nbreaks=sum(!is.na(ind)))
+# cell_breaks %>% select(-nbreaks) %>% anyDuplicated() # good, no duplicates - we're only counting unique MSR-PPS cells
+
+```
+
+
+## Measures with the greatest and least number of PPS's that have breaks
+### Measures ranked by number of PPS's with level shifts
+```{r meas_pct_table}
+# for each MSR get % of PPS that had breaks
+meas_pct <- cell_breaks %>%
   group_by(MSR_RESULT_ID, MSR_RESULT_NAME) %>%
-  summarise(n=n(), breaks=sum(nbreaks>0)) %>%
-  mutate(pctbreaks=breaks / n * 100) %>%
-  arrange(-breaks)
+  summarise(npps=n(), n_with_breaks=sum(nbreaks>0)) %>%
+  ungroup %>%
+  mutate(pct_with_breaks=n_with_breaks / npps * 100) %>%
+  arrange(-n_with_breaks)
 
+meas_pct %>%
+  datatable() %>%
+  formatRound(columns=c('pct_with_breaks'), digits=1)
 
+```
+
+### Facet plots of measures with most number of PPS's that have level shifts
+```{r mplot, fig.height=12, fig.width=12}
+# calculate for each MSR-PPS where vertical lines indicating breaks should be drawn
 vlines <- shifts_long %>%
   filter(!is.na(ind)) %>%
-  select(MSR_RESULT_ID, PPS_ID, idname, ind) %>%
+  select(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, idname, ind) %>%
   mutate(time=ind - 13)
-vlines
+# vlines
 
-brks <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
-fltr <- expression(PPS_ID %in% c(1:5, 16, 52, 99) & MSR_RESULT_ID %in% c("AAPC20RES", "AMRRES"))
+mplot <- function(msrid) {
+  xlabels <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+  subt <- "Blue lines mark DSRIP start (time=1) and moving-average phase in (time=12). Red lines mark break points. Pink points mark MY4."
+  
+  p <- ppsdf_clean %>%
+    filter(MSR_RESULT_ID==msrid) %>%
+    ggplot(aes(time, MSR_RESULT)) +
+    geom_line() +
+    geom_point() +
+    scale_x_continuous(breaks=xlabels) +
+    geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+    geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+    geom_vline(aes(xintercept=time), colour="red", data=vlines %>% filter(MSR_RESULT_ID==msrid)) +
+    geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5)) +  
+    theme_bw() +
+    facet_wrap(~idname, ncol=5, scales = "free") +
+    theme(legend.position = "none") +
+    ggtitle(paste0(msrid, ": ", msr_name(msrid)),
+            subtitle=subt)
+  return(p)
+}
 
-fltr <- expression(MSR_RESULT_ID == "AAPC45RES")
-vlines2 <- vlines %>% filter(eval(fltr))
-p <- ppsdf %>%
-  filter(eval(fltr)) %>%
-  ggplot(aes(time, MSR_RESULT)) +
-  geom_line() +
-  geom_point() +
-  scale_x_continuous(breaks=brks) +
-  geom_vline(xintercept = 1, colour="blue", linetype="solid") +
-  geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
-  geom_vline(aes(xintercept=time), colour="red", data=vlines2) +
-  theme(axis.text.x=element_text(angle=90, vjust=0.5)) +
-  theme_bw() +
-  facet_wrap(~MSR_RESULT_ID + PPS_ID, ncol=5, scales = "free") +
-  theme(legend.position = "none")
-p
+for(msrid in meas_pct$MSR_RESULT_ID[1:5]) {
+  print(mplot(msrid))
+}
+
+```
+
+### Facet plots of measures with fewest PPS's that have level shifts
+```{r mplot2, fig.height=12, fig.width=12}
+# let's limit this to measures where we have a lot of observations
+bottom <- (nrow(meas_pct) - 4):nrow(meas_pct)
+for(msrid in meas_pct$MSR_RESULT_ID[bottom]) {
+  print(mplot(msrid))
+}
+
+```
+
+## PPS's with the greatest and least number of measures that have breaks
+### PPS's ranked by number of measures with level shifts
+```{r pps_pct_table}
+# for each MSR get % of PPS that had breaks
+pps_pct <- cell_breaks %>%
+  group_by(PPS_ID, PPS_NAME, idname) %>%
+  summarise(nmeas=n(), n_with_breaks=sum(nbreaks>0)) %>%
+  ungroup %>%
+  mutate(pct_with_breaks=n_with_breaks / nmeas * 100) %>%
+  arrange(-n_with_breaks)
+
+pps_pct %>%
+  datatable() %>%
+  formatRound(columns=c('pct_with_breaks'), digits=1)
+
+```
+
+### Facet plots of PPS's with most number of measures that have level shifts
+```{r pplot, fig.height=12, fig.width=12}
+# calculate for each MSR-PPS where vertical lines indicating breaks should be drawn
+vlines <- shifts_long %>%
+  filter(!is.na(ind)) %>%
+  select(MSR_RESULT_ID, MSR_RESULT_NAME, PPS_ID, idname, ind) %>%
+  mutate(time=ind - 13)
+# vlines
+
+pplot <- function(ppsid) {
+  xlabels <- c(seq(0, -30, -3) %>% rev, seq(3, 60, 3))
+  subt <- "Blue lines mark DSRIP start (time=1) and moving-average phase in (time=12). Red lines mark break points. Pink points mark MY4."
+  plotname <- ppsdf_clean %>% filter(PPS_ID==ppsid);   plotname <- plotname$idname[1]
+  measids <- meas_pct$MSR_RESULT_ID[1:25] # grab measures with the greatest number of breaks (trusting the sort)
+  
+  # ppsid <- 99
+  p <- ppsdf_clean %>%
+    filter(PPS_ID==ppsid, MSR_RESULT_ID %in% measids) %>%
+    ggplot(aes(time, MSR_RESULT)) +
+    geom_line() +
+    geom_point() +
+    scale_x_continuous(breaks=xlabels) +
+    geom_vline(xintercept = 1, colour="blue", linetype="solid") +
+    geom_vline(xintercept = 12, colour="blue", linetype="dashed") +
+    geom_vline(aes(xintercept=time), colour="red", data=vlines %>% filter(PPS_ID==ppsid)) +
+    geom_point(aes(time, MSR_RESULT), colour="pink", data=. %>% filter(my4==1)) +
+    theme(axis.text.x=element_text(angle=90, vjust=0.5)) +  
+    theme_bw() +
+    facet_wrap(~MSR_RESULT_ID, ncol=5, scales = "free") +
+    theme(legend.position = "none") +
+    ggtitle(plotname,
+            subtitle=subt)
+  return(p)
+}
+
+for(ppsid in pps_pct$PPS_ID[1:5]) {
+  print(pplot(ppsid))
+}
 
 
 ```
 
 
+### Facet plots of PPS's with fewest measures that have level shifts
+```{r pplot2, fig.height=12, fig.width=12}
+# calculate for each MSR-PPS where vertical lines indicating breaks should be drawn
+bottom <- (nrow(pps_pct)-4):nrow(pps_pct)
+for(ppsid in pps_pct$PPS_ID[bottom]) {
+  print(pplot(ppsid))
+}
+
+```
 
